@@ -1,0 +1,37 @@
+# Web框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# 数据库
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.12.1
+
+# 配置管理
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# 交易所API
+ccxt>=4.0.0
+
+# 数据处理
+pandas>=2.0.0
+# pandas-ta>=0.3.14  # 稍后单独安装
+numpy>=1.24.0
+
+# WebSocket
+websocket-client>=1.6.0,<1.7.0  # 使用1.6.x稳定版本，避免1.6.4可能的bug
+websockets>=11.0
+wsproto>=1.2.0
+
+# HTTP请求
+httpx==0.25.1
+requests==2.31.0
+certifi>=2023.0.0  # SSL证书支持
+
+# 工具
+python-dotenv==1.0.0
+
+# 日志
+loguru==0.7.2
+

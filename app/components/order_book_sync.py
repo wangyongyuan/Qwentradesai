@@ -1,0 +1,81 @@
+"""
+盘口挂单分布同步管理器
+"""
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Optional
+from app.components.api_manager import APIManager
+from app.database.connection import db
+from app.database.order_book import OrderBookRepository
+from app.config import settings
+from app.utils.logger import logger
+
+
+class OrderBookSyncManager(threading.Thread):
+    """盘口挂单分布同步管理器（后台线程）"""
+    
+    def __init__(self, api_manager: APIManager, symbol: str):
+        super().__init__(name=f"OrderBookSyncThread-{symbol}", daemon=False)
+        self.api_manager = api_manager
+        self.symbol = symbol
+        self.ccxt_symbol = settings.symbol_to_ccxt_format(symbol)
+        self.stop_event = threading.Event()
+        self.db = db
+        self.last_sync_time: Optional[datetime] = None
+    
+    def stop(self):
+        self.stop_event.set()
+    
+    def _should_sync(self, now: datetime) -> bool:
+        """每1小时同步一次"""
+        if self.last_sync_time is None:
+            return True
+        time_diff = (now - self.last_sync_time).total_seconds()
+        return time_diff >= 3600  # 1小时
+    
+    def _fetch_and_save_order_book(self) -> bool:
+        """获取并保存盘口挂单分布数据"""
+        try:
+            # 使用OKX API获取订单簿深度（400档）
+            exchange = self.api_manager.exchange
+            order_book = exchange.fetch_order_book(self.ccxt_symbol, limit=400)
+            
+            if not order_book or 'asks' not in order_book or 'bids' not in order_book:
+                logger.warning(f"获取{self.symbol}盘口挂单数据为空")
+                return False
+            
+            now = datetime.now(timezone.utc)
+            
+            # OKX返回的格式已经是列表格式
+            asks = order_book.get('asks', [])
+            bids = order_book.get('bids', [])
+            
+            with self.db.get_session() as session:
+                if OrderBookRepository.insert_order_book(
+                    session,
+                    symbol=self.symbol,
+                    time=now,
+                    asks=asks,
+                    bids=bids
+                ):
+                    self.last_sync_time = now
+                    return True
+                return False
+                
+        except Exception as e:
+            logger.error(f"获取并保存{self.symbol}盘口挂单数据失败: {e}")
+            return False
+    
+    def run(self):
+        
+        while not self.stop_event.is_set():
+            try:
+                now = datetime.now(timezone.utc)
+                if self._should_sync(now):
+                    self._fetch_and_save_order_book()
+                time.sleep(300)  # 每5分钟检查一次
+            except Exception as e:
+                logger.error(f"{self.symbol} 盘口挂单同步线程错误: {e}")
+                time.sleep(60)
+
