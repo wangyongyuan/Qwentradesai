@@ -15,6 +15,7 @@ from app.components.market_sentiment_sync import MarketSentimentSyncManager
 from app.components.order_book_sync import OrderBookSyncManager
 from app.components.etf_flow_sync import ETFFlowSyncManager
 from app.components.fear_greed_sync import FearGreedSyncManager
+from app.components.liquidation_sync import LiquidationSyncManager
 # 持仓同步和OKX订单历史同步已删除
 # from app.components.position_manager import PositionManager
 # from app.components.position_sync import PositionSyncManager
@@ -55,6 +56,7 @@ market_sentiment_sync_managers: Dict[str, MarketSentimentSyncManager] = {}  # �
 order_book_sync_managers: Dict[str, OrderBookSyncManager] = {}  # 每个币种一个盘口挂单同步管理器
 etf_flow_sync_managers: Dict[str, ETFFlowSyncManager] = {}  # 每个币种一个ETF资金流同步管理器
 fear_greed_sync_manager: FearGreedSyncManager = None  # 恐惧贪婪指数同步管理器（全局唯一）
+liquidation_sync_managers: Dict[str, LiquidationSyncManager] = {}  # 每个币种一个爆仓历史同步管理器
 # 持仓同步和OKX订单历史同步已删除
 # position_sync_manager: PositionSyncManager = None  # 持仓同步管理器（全局唯一）
 # okx_orders_sync_manager: OKXOrdersSyncManager = None  # OKX订单历史同步管理器（全局唯一）
@@ -152,6 +154,14 @@ async def startup():
         fear_greed_sync_manager.start()
         logger.info("恐惧贪婪指数同步管理器已启动")
         
+        # 为每个币种创建爆仓历史同步管理器
+        logger.info(f"初始化爆仓历史同步管理器（币种: {', '.join(trading_symbols)}）...")
+        for symbol in trading_symbols:
+            liquidation_sync_manager = LiquidationSyncManager(coinglass_client, symbol)
+            liquidation_sync_manager.start()
+            liquidation_sync_managers[symbol] = liquidation_sync_manager
+            logger.info(f"{symbol} 爆仓历史同步管理器已启动")
+        
         # 持仓同步和OKX订单历史同步已删除
         # 系统现在只负责基础数据同步，不进行持仓和订单历史同步
         
@@ -174,6 +184,7 @@ async def shutdown():
     global kline_sync_managers, funding_rate_sync_managers, api_manager
     global open_interest_sync_managers, market_sentiment_sync_managers
     global order_book_sync_managers, etf_flow_sync_managers, fear_greed_sync_manager
+    global liquidation_sync_managers
     # 持仓同步和OKX订单历史同步已删除
     # global position_sync_manager, okx_orders_sync_manager, okx_positions_history_sync_manager
     
@@ -208,6 +219,20 @@ async def shutdown():
                         logger.info(f"{symbol} ETF资金流同步线程已停止")
                 except Exception as e:
                     logger.error(f"停止{symbol} ETF资金流同步线程失败: {e}", exc_info=True)
+        
+        # 停止所有爆仓历史同步线程
+        if liquidation_sync_managers:
+            logger.info("正在停止爆仓历史同步线程...")
+            for symbol, manager in liquidation_sync_managers.items():
+                try:
+                    manager.stop()
+                    manager.join(timeout=5)
+                    if manager.is_alive():
+                        logger.warning(f"{symbol} 爆仓历史同步线程未在5秒内停止")
+                    else:
+                        logger.info(f"{symbol} 爆仓历史同步线程已停止")
+                except Exception as e:
+                    logger.error(f"停止{symbol} 爆仓历史同步线程失败: {e}", exc_info=True)
         
         # 停止所有盘口挂单同步线程
         if order_book_sync_managers:

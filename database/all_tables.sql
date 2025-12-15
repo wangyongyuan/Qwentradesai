@@ -327,8 +327,8 @@ CREATE TABLE IF NOT EXISTS order_book_distribution (
     time TIMESTAMPTZ NOT NULL,                -- 订单簿时间戳（主键），1小时更新一次，UTC时区
     
     -- 原始数据（JSONB格式，存储OKX API返回的完整asks和bids数组）
-    asks JSONB NOT NULL,                     -- 卖单深度数组，最多400档，格式：[["价格", "数量", "0", "订单数"], ...]
-    bids JSONB NOT NULL,                     -- 买单深度数组，最多400档，格式：[["价格", "数量", "0", "订单数"], ...]
+    asks JSONB NOT NULL,                     -- 卖单深度数组，最多1000档，格式：[["价格", "数量", "订单数"], ...]
+    bids JSONB NOT NULL,                     -- 买单深度数组，最多1000档，格式：[["价格", "数量", "订单数"], ...]
     
     -- 汇总统计（便于快速查询）
     total_ask_amount DECIMAL(20, 8),          -- 卖单总数量（所有asks档位的数量之和）
@@ -355,8 +355,8 @@ CREATE INDEX IF NOT EXISTS idx_order_book_symbol_time ON order_book_distribution
 COMMENT ON TABLE order_book_distribution IS '盘口挂单分布表，存储OKX订单簿深度数据（1小时更新一次，保留90天）';
 COMMENT ON COLUMN order_book_distribution.symbol IS '币种名称：BTC, ETH, SOL等';
 COMMENT ON COLUMN order_book_distribution.time IS '订单簿时间戳（主键），1小时更新一次，UTC时区';
-COMMENT ON COLUMN order_book_distribution.asks IS '卖单深度数组（JSONB），最多400档，每个元素格式：["价格", "数量", "0", "订单数"]';
-COMMENT ON COLUMN order_book_distribution.bids IS '买单深度数组（JSONB），最多400档，每个元素格式：["价格", "数量", "0", "订单数"]';
+COMMENT ON COLUMN order_book_distribution.asks IS '卖单深度数组（JSONB），最多1000档，每个元素格式：["价格", "数量", "订单数"]';
+COMMENT ON COLUMN order_book_distribution.bids IS '买单深度数组（JSONB），最多1000档，每个元素格式：["价格", "数量", "订单数"]';
 COMMENT ON COLUMN order_book_distribution.total_ask_amount IS '卖单总数量（所有asks档位的数量之和）';
 COMMENT ON COLUMN order_book_distribution.total_bid_amount IS '买单总数量（所有bids档位的数量之和）';
 COMMENT ON COLUMN order_book_distribution.total_ask_orders IS '卖单总订单数（所有asks档位的订单数之和）';
@@ -406,7 +406,40 @@ COMMENT ON COLUMN etf_flow_data.created_at IS '记录创建时间';
 COMMENT ON COLUMN etf_flow_data.updated_at IS '记录更新时间';
 
 -- ============================================
--- 2.6 恐惧贪婪指数表 (fear_greed_index)
+-- 2.6 爆仓历史表 (liquidation_history)
+-- 说明: 存储币种的爆仓历史数据，包括多单和空单爆仓金额
+-- 主键: (symbol, time)
+-- 数据来源: CoinGlass API
+-- 更新频率: 每4小时更新一次
+-- ============================================
+CREATE TABLE IF NOT EXISTS liquidation_history (
+    symbol VARCHAR(20) NOT NULL,              -- 币种名称：BTC, ETH等
+    time TIMESTAMPTZ NOT NULL,                -- 时间戳（主键），UTC时区
+    
+    -- 爆仓数据
+    aggregated_long_liquidation_usd DECIMAL(30, 8) NOT NULL,   -- 聚合多单爆仓金额（美元）
+    aggregated_short_liquidation_usd DECIMAL(30, 8) NOT NULL,  -- 聚合空单爆仓金额（美元）
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),     -- 记录创建时间
+    
+    PRIMARY KEY (symbol, time)
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_liquidation_symbol ON liquidation_history(symbol);
+CREATE INDEX IF NOT EXISTS idx_liquidation_time ON liquidation_history(time);
+CREATE INDEX IF NOT EXISTS idx_liquidation_symbol_time ON liquidation_history(symbol, time DESC);
+
+-- 表注释
+COMMENT ON TABLE liquidation_history IS '爆仓历史表，存储币种的爆仓历史数据（每4小时更新一次，保留90天）';
+COMMENT ON COLUMN liquidation_history.symbol IS '币种名称：BTC, ETH等';
+COMMENT ON COLUMN liquidation_history.time IS '时间戳（主键），UTC时区';
+COMMENT ON COLUMN liquidation_history.aggregated_long_liquidation_usd IS '聚合多单爆仓金额（美元）';
+COMMENT ON COLUMN liquidation_history.aggregated_short_liquidation_usd IS '聚合空单爆仓金额（美元）';
+COMMENT ON COLUMN liquidation_history.created_at IS '记录创建时间';
+
+-- ============================================
+-- 2.7 恐惧贪婪指数表 (fear_greed_index)
 -- 说明: 存储加密货币市场的恐惧贪婪指数，用于判断市场情绪
 -- 主键: date
 -- 数据来源: CoinGlass API
@@ -593,19 +626,35 @@ END $$;
 -- ============================================
 -- 15分钟K线表：7天一个chunk，30天后压缩，保留180天
 SELECT create_hypertable('klines_15m'::regclass, 'time'::name, chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
-ALTER TABLE klines_15m SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE klines_15m SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    -- 如果表已经有压缩chunk或已启用压缩，忽略错误
+    NULL;
+END $$;
 SELECT add_compression_policy('klines_15m'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('klines_15m'::regclass, INTERVAL '180 days', if_not_exists => TRUE);
 
 -- 4小时K线表：30天一个chunk，30天后压缩，保留365天
 SELECT create_hypertable('klines_4h'::regclass, 'time'::name, chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);
-ALTER TABLE klines_4h SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE klines_4h SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('klines_4h'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('klines_4h'::regclass, INTERVAL '365 days', if_not_exists => TRUE);
 
 -- 日线K线表：90天一个chunk，30天后压缩，保留730天
 SELECT create_hypertable('klines_1d'::regclass, 'time'::name, chunk_time_interval => INTERVAL '90 days', if_not_exists => TRUE);
-ALTER TABLE klines_1d SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE klines_1d SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('klines_1d'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('klines_1d'::regclass, INTERVAL '730 days', if_not_exists => TRUE);
 
@@ -614,37 +663,78 @@ SELECT add_retention_policy('klines_1d'::regclass, INTERVAL '730 days', if_not_e
 -- ============================================
 -- 资金费率历史表：30天一个chunk，30天后压缩，保留365天
 SELECT create_hypertable('funding_rate_history'::regclass, 'time'::name, chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);
-ALTER TABLE funding_rate_history SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE funding_rate_history SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('funding_rate_history'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('funding_rate_history'::regclass, INTERVAL '365 days', if_not_exists => TRUE);
 
 -- 未平仓合约15分钟表：7天一个chunk，30天后压缩，保留180天
 SELECT create_hypertable('open_interest_15m'::regclass, 'time'::name, chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
-ALTER TABLE open_interest_15m SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE open_interest_15m SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('open_interest_15m'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('open_interest_15m'::regclass, INTERVAL '180 days', if_not_exists => TRUE);
 
 -- 市场情绪数据表：30天一个chunk，30天后压缩，保留365天
 SELECT create_hypertable('market_sentiment_data'::regclass, 'time'::name, chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);
-ALTER TABLE market_sentiment_data SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE market_sentiment_data SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('market_sentiment_data'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('market_sentiment_data'::regclass, INTERVAL '365 days', if_not_exists => TRUE);
 
 -- 盘口挂单分布表：7天一个chunk，30天后压缩，保留90天
 SELECT create_hypertable('order_book_distribution'::regclass, 'time'::name, chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
-ALTER TABLE order_book_distribution SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE order_book_distribution SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('order_book_distribution'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('order_book_distribution'::regclass, INTERVAL '90 days', if_not_exists => TRUE);
 
+-- 爆仓历史表：7天一个chunk，30天后压缩，保留90天
+SELECT create_hypertable('liquidation_history'::regclass, 'time'::name, chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
+DO $$
+BEGIN
+    ALTER TABLE liquidation_history SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
+SELECT add_compression_policy('liquidation_history'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
+SELECT add_retention_policy('liquidation_history'::regclass, INTERVAL '90 days', if_not_exists => TRUE);
+
 -- ETF资金流数据表：30天一个chunk，30天后压缩，保留730天
 SELECT create_hypertable('etf_flow_data'::regclass, 'date'::name, chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);
-ALTER TABLE etf_flow_data SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE etf_flow_data SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('etf_flow_data'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('etf_flow_data'::regclass, INTERVAL '730 days', if_not_exists => TRUE);
 
 -- 恐惧贪婪指数表：30天一个chunk，30天后压缩，保留730天
 SELECT create_hypertable('fear_greed_index'::regclass, 'date'::name, chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);
-ALTER TABLE fear_greed_index SET (timescaledb.compress = true);
+DO $$
+BEGIN
+    ALTER TABLE fear_greed_index SET (timescaledb.compress = true);
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 SELECT add_compression_policy('fear_greed_index'::regclass, INTERVAL '30 days', if_not_exists => TRUE);
 SELECT add_retention_policy('fear_greed_index'::regclass, INTERVAL '730 days', if_not_exists => TRUE);
 

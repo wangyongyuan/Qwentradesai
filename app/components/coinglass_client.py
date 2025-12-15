@@ -217,4 +217,43 @@ class CoinGlassClient:
             params['endTime'] = end_time
         
         return self._request('/api/index/fear-greed-history', params)
+    
+    def get_liquidation_history(
+        self,
+        symbol: str,
+        exchange_list: str = "OKX",
+        interval: str = "4h",
+        limit: int = 1000,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None
+    ) -> Optional[List[Dict]]:
+        """
+        获取币种爆仓历史数据
+        
+        Args:
+            symbol: 币种名称（BTC, ETH等）
+            exchange_list: 交易所列表，以逗号分隔（例如："Binance, OKX, Bybit"），默认OKX
+            interval: 时间间隔，默认4h（支持：1m、3m、5m、15m、30m、1h、4h、6h、8h、12h、1d、1w）
+            limit: 返回数据条数，默认1000，最大1000
+            start_time: 开始时间戳（毫秒，可选）
+            end_time: 结束时间戳（毫秒，可选）
+            
+        Returns:
+            爆仓历史数据列表，包含：
+            - aggregated_long_liquidation_usd: 聚合多单爆仓金额（美元）
+            - aggregated_short_liquidation_usd: 聚合空单爆仓金额（美元）
+            - time: 时间戳（毫秒）
+        """
+        params = {
+            'symbol': symbol.upper(),
+            'exchange_list': exchange_list,
+            'interval': interval,
+            'limit': min(limit, 1000)  # 限制最大值为1000
+        }
+        if start_time:
+            params['startTime'] = start_time
+        if end_time:
+            params['endTime'] = end_time
+        
+        return self._request('/api/futures/liquidation/aggregated-history', params)
 

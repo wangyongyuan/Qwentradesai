@@ -16,8 +16,7 @@ NC='\033[0m' # No Color
 
 # 项目信息
 PROJECT_NAME="QwenTradeAI"
-VERSION=$(date +"%Y%m%d_%H%M%S")
-PACKAGE_NAME="${PROJECT_NAME}_${VERSION}.tar.gz"
+PACKAGE_NAME="${PROJECT_NAME}.tar.gz"
 
 # 获取脚本所在目录（项目根目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -105,7 +104,6 @@ echo -e "${YELLOW}正在创建打包信息...${NC}"
 cat > "$PACKAGE_DIR/PACKAGE_INFO.txt" << EOF
 项目名称: ${PROJECT_NAME}
 打包时间: $(date '+%Y-%m-%d %H:%M:%S')
-打包版本: ${VERSION}
 打包说明: 
   - 包含所有源代码和配置文件
   - 已排除虚拟环境、日志、缓存等文件

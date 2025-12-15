@@ -49,15 +49,28 @@ class OrderBookRepository:
             是否插入成功
         """
         try:
+            # 验证数据格式是否符合文档要求
+            # 文档要求：["411.8", "10", "4"] - 价格、数量、订单数 (3个字段)
+            if asks and len(asks) > 0:
+                sample_ask = asks[0]
+                if len(sample_ask) < 3:
+                    logger.warning(f"asks数据格式不符合要求，应为3个字段，实际: {len(sample_ask)}个字段，示例: {sample_ask}")
+            if bids and len(bids) > 0:
+                sample_bid = bids[0]
+                if len(sample_bid) < 3:
+                    logger.warning(f"bids数据格式不符合要求，应为3个字段，实际: {len(sample_bid)}个字段，示例: {sample_bid}")
+            
             # 如果没有提供汇总字段，自动计算
+            # 根据文档：ask[0]/bid[0]是深度价格，ask[1]/bid[1]是数量（合约张数或交易币数量），ask[2]/bid[2]是订单数量
             if total_ask_amount is None:
                 total_ask_amount = sum(float(ask[1]) for ask in asks if len(ask) >= 2)
             if total_bid_amount is None:
                 total_bid_amount = sum(float(bid[1]) for bid in bids if len(bid) >= 2)
+            # 根据文档：ask[2]和bid[2]是订单数量
             if total_ask_orders is None:
-                total_ask_orders = sum(int(ask[3]) for ask in asks if len(ask) >= 4)
+                total_ask_orders = sum(int(float(ask[2])) for ask in asks if len(ask) >= 3)
             if total_bid_orders is None:
-                total_bid_orders = sum(int(bid[3]) for bid in bids if len(bid) >= 4)
+                total_bid_orders = sum(int(float(bid[2])) for bid in bids if len(bid) >= 3)
             if bid_ask_ratio is None and total_ask_amount != 0:
                 bid_ask_ratio = total_bid_amount / total_ask_amount
             
