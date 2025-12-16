@@ -16,14 +16,15 @@ from app.components.order_book_sync import OrderBookSyncManager
 from app.components.etf_flow_sync import ETFFlowSyncManager
 from app.components.fear_greed_sync import FearGreedSyncManager
 from app.components.liquidation_sync import LiquidationSyncManager
+from app.components.market_detector import MarketDetector
 # 持仓同步和OKX订单历史同步已删除
 # from app.components.position_manager import PositionManager
 # from app.components.position_sync import PositionSyncManager
 # from app.components.okx_orders_sync import OKXOrdersSyncManager
 # from app.components.okx_positions_history_sync import OKXPositionsHistorySyncManager
 # from app.components.risk_guard_thread import RiskGuardThread
-# AI和市场检测相关模块已删除
-# from app.layers.market_detector import MarketDetector, MarketDetectorConfig
+# AI相关模块已删除
+# from app.layers.data_preparator import DataPreparator
 # from app.layers.data_preparator import DataPreparator
 # from app.layers.ai_council import AICouncil
 # from app.layers.main_controller import MainController
@@ -57,13 +58,13 @@ order_book_sync_managers: Dict[str, OrderBookSyncManager] = {}  # 每个币种�
 etf_flow_sync_managers: Dict[str, ETFFlowSyncManager] = {}  # 每个币种一个ETF资金流同步管理器
 fear_greed_sync_manager: FearGreedSyncManager = None  # 恐惧贪婪指数同步管理器（全局唯一）
 liquidation_sync_managers: Dict[str, LiquidationSyncManager] = {}  # 每个币种一个爆仓历史同步管理器
+market_detectors: Dict[str, MarketDetector] = {}  # 每个币种一个市场检测器
 # 持仓同步和OKX订单历史同步已删除
 # position_sync_manager: PositionSyncManager = None  # 持仓同步管理器（全局唯一）
 # okx_orders_sync_manager: OKXOrdersSyncManager = None  # OKX订单历史同步管理器（全局唯一）
 # okx_positions_history_sync_manager: OKXPositionsHistorySyncManager = None  # OKX历史持仓同步管理器（全局唯一）
 # position_manager: PositionManager = None  # 持仓管理器
-# AI和市场检测相关组件已删除
-# market_detector: MarketDetector = None  # 市场检测器
+# AI相关组件已删除
 # data_preparator: DataPreparator = None  # 数据准备器
 # ai_council: AICouncil = None  # AI委员会
 # trade_executor: TradeExecutor = None  # 交易执行器
@@ -78,10 +79,11 @@ async def startup():
     global kline_sync_managers, funding_rate_sync_managers
     global open_interest_sync_managers, market_sentiment_sync_managers
     global order_book_sync_managers, etf_flow_sync_managers, fear_greed_sync_manager
+    global market_detectors
     # 持仓同步和OKX订单历史同步已删除
     # global position_sync_manager, okx_orders_sync_manager, okx_positions_history_sync_manager, position_manager
-    # AI和市场检测相关组件已删除
-    # global market_detector, data_preparator, ai_council, trade_executor, main_controller, risk_guard_thread
+    # AI相关组件已删除
+    # global data_preparator, ai_council, trade_executor, main_controller, risk_guard_thread
     
     logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
     
@@ -97,11 +99,22 @@ async def startup():
         coinglass_client = CoinGlassClient(settings)
         logger.info("CoinGlass客户端初始化完成")
         
-        # 为每个币种创建K线同步管理器
+        # 初始化市场检测器（目前仅ETH）
         trading_symbols = settings.get_trading_symbols()
+        detector_symbols = ['ETH']  # 目前只给ETH创建检测器
+        logger.info(f"初始化市场检测器（币种: {', '.join(detector_symbols)}）...")
+        for symbol in detector_symbols:
+            if symbol in trading_symbols:
+                market_detector = MarketDetector(symbol)
+                market_detectors[symbol] = market_detector
+                logger.info(f"{symbol} 市场检测器已初始化")
+        
+        # 为每个币种创建K线同步管理器
         logger.info(f"初始化K线同步管理器（币种: {', '.join(trading_symbols)}）...")
         for symbol in trading_symbols:
-            kline_sync_manager = KlineSyncManager(api_manager, symbol)
+            # 如果该币种有检测器，传入检测器实例
+            market_detector = market_detectors.get(symbol)
+            kline_sync_manager = KlineSyncManager(api_manager, symbol, market_detector=market_detector)
             kline_sync_manager.start()
             kline_sync_managers[symbol] = kline_sync_manager
             logger.info(f"{symbol} K线同步管理器已启动")
