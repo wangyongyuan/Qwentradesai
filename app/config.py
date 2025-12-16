@@ -405,6 +405,69 @@ class Settings:
         return self._get('LOG_BACKUP_COUNT', 5, 'int')
     
     # ============================================
+    # 市场检测器配置
+    # ============================================
+    # 环境层参数
+    @property
+    def DETECTOR_EMA_TREND_PERIOD(self) -> int:
+        """市场检测器：用于趋势判断的EMA周期（环境层），默认55"""
+        return self._get('DETECTOR_EMA_TREND_PERIOD', 55, 'int')
+    
+    @property
+    def DETECTOR_BB_WIDTH_THRESHOLD(self) -> float:
+        """市场检测器：布林带宽度阈值（相对于20根平均值的倍数），低于此值认为市场不活跃，默认0.5"""
+        return self._get('DETECTOR_BB_WIDTH_THRESHOLD', 0.5, 'float')
+    
+    # 触发层参数
+    @property
+    def DETECTOR_RSI_LONG_THRESHOLD(self) -> float:
+        """市场检测器：做多信号RSI上限（RSI低于此值才允许做多，防止极端过热），默认80.0"""
+        return self._get('DETECTOR_RSI_LONG_THRESHOLD', 80.0, 'float')
+    
+    @property
+    def DETECTOR_RSI_SHORT_THRESHOLD(self) -> float:
+        """市场检测器：做空信号RSI下限（RSI高于此值才允许做空，防止极端超卖），默认20.0"""
+        return self._get('DETECTOR_RSI_SHORT_THRESHOLD', 20.0, 'float')
+    
+    @property
+    def DETECTOR_RSI_DOUBLE_POSITION_LONG(self) -> float:
+        """市场检测器：做多时RSI低于此值加倍仓位（更好的盈亏比），默认50.0"""
+        return self._get('DETECTOR_RSI_DOUBLE_POSITION_LONG', 50.0, 'float')
+    
+    @property
+    def DETECTOR_RSI_DOUBLE_POSITION_SHORT(self) -> float:
+        """市场检测器：做空时RSI高于此值加倍仓位（更好的盈亏比），默认50.0"""
+        return self._get('DETECTOR_RSI_DOUBLE_POSITION_SHORT', 50.0, 'float')
+    
+    # 确认层参数
+    @property
+    def DETECTOR_VOLUME_STD_MULTIPLIER(self) -> float:
+        """市场检测器：成交量确认阈值（平均值 + 此倍数 × 标准差），降低此值可增加信号数量，默认1.5"""
+        return self._get('DETECTOR_VOLUME_STD_MULTIPLIER', 1.5, 'float')
+    
+    # 数据量参数
+    @property
+    def DETECTOR_KLINE_15M_COUNT(self) -> int:
+        """市场检测器：使用的15分钟K线数量，默认100"""
+        return self._get('DETECTOR_KLINE_15M_COUNT', 100, 'int')
+    
+    @property
+    def DETECTOR_KLINE_4H_COUNT(self) -> int:
+        """市场检测器：使用的4小时K线数量，默认60"""
+        return self._get('DETECTOR_KLINE_4H_COUNT', 60, 'int')
+    
+    # 其他参数
+    @property
+    def DETECTOR_ENABLE_MULTI_TF(self) -> bool:
+        """市场检测器：是否启用多时间框架确认（15m和4h共振加分），默认true"""
+        return self._get('DETECTOR_ENABLE_MULTI_TF', True, 'bool')
+    
+    @property
+    def DETECTOR_SIGNAL_EXPIRE_HOURS(self) -> int:
+        """市场检测器：信号有效期（小时），超过此时间信号自动过期，默认4"""
+        return self._get('DETECTOR_SIGNAL_EXPIRE_HOURS', 4, 'int')
+    
+    # ============================================
     # 报警通知配置（可选）
     # ============================================
     @property
