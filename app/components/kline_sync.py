@@ -111,6 +111,14 @@ class KlineSyncManager(threading.Thread):
                 # 无论是否插入新数据，都更新指标（确保数据最新）
                 self.indicator_calculator.update_latest_indicators(timeframe, self.symbol)
                 
+                # 15m K线保存完成后触发市场检测
+                if timeframe == '15m' and self.market_detector:
+                    try:
+                        self.market_detector.detect()
+                    except Exception as e:
+                        logger.error(f"{self.symbol} 市场检测失败: {e}", exc_info=True)
+                        # 检测失败不影响K线同步流程
+                
                 return True
                     
             finally:
