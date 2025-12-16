@@ -16,13 +16,22 @@ from app.utils.logger import logger
 class KlineSyncManager(threading.Thread):
     """K线数据同步管理器（后台线程）"""
     
-    def __init__(self, api_manager: APIManager, symbol: str):
+    def __init__(self, api_manager: APIManager, symbol: str, market_detector=None):
+        """
+        初始化K线同步管理器
+        
+        Args:
+            api_manager: API管理器
+            symbol: 币种名称（BTC, ETH等）
+            market_detector: 市场检测器实例（可选）
+        """
         super().__init__(name=f"KlineSyncThread-{symbol}", daemon=False)
         self.api_manager = api_manager
         self.symbol = symbol  # 币种名称：BTC, ETH等
         self.ccxt_symbol = settings.symbol_to_ccxt_format(symbol)  # 转换为CCXT格式
         self.stop_event = threading.Event()
         self.indicator_calculator = IndicatorCalculator()
+        self.market_detector = market_detector  # 市场检测器（可选）
         self.db = db
         
         # 同步状态
@@ -101,6 +110,14 @@ class KlineSyncManager(threading.Thread):
                 
                 # 无论是否插入新数据，都更新指标（确保数据最新）
                 self.indicator_calculator.update_latest_indicators(timeframe, self.symbol)
+                
+                # 15m K线保存完成后触发市场检测
+                if timeframe == '15m' and self.market_detector:
+                    try:
+                        self.market_detector.detect()
+                    except Exception as e:
+                        logger.error(f"{self.symbol} 市场检测失败: {e}", exc_info=True)
+                        # 检测失败不影响K线同步流程
                 
                 return True
                     

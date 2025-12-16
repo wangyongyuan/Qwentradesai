@@ -475,6 +475,156 @@ COMMENT ON COLUMN fear_greed_index.created_at IS '记录创建时间';
 COMMENT ON COLUMN fear_greed_index.updated_at IS '记录更新时间';
 
 -- ============================================
+-- 2.8 市场检测快照表 (market_detection_snapshots)
+-- 说明: 存储每次市场检测的完整快照，无论是否生成信号都保存，用于回溯分析
+-- 主键: id
+-- 数据来源: 市场检测器
+-- 更新频率: 每15分钟（15m K线更新时）
+-- ============================================
+CREATE TABLE IF NOT EXISTS market_detection_snapshots (
+    id BIGSERIAL PRIMARY KEY,                    -- 自增主键ID
+    symbol VARCHAR(20) NOT NULL,                 -- 币种名称：BTC, ETH等
+    detected_at TIMESTAMPTZ NOT NULL,            -- 检测时间（UTC时区）
+    
+    -- 检测时的价格信息
+    price DECIMAL(20, 8) NOT NULL,               -- 检测时的价格
+    price_change_24h DECIMAL(10, 4),             -- 24小时价格变化百分比
+    
+    -- 使用的K线时间点（用于关联）
+    kline_15m_time TIMESTAMPTZ NOT NULL,         -- 15分钟K线时间
+    kline_4h_time TIMESTAMPTZ NOT NULL,          -- 4小时K线时间
+    kline_1d_time TIMESTAMPTZ,                   -- 日线K线时间（可选）
+    
+    -- 环境层判断结果
+    market_mode VARCHAR(20),                     -- 市场模式：BULL/BEAR/NEUTRAL
+    market_active BOOLEAN DEFAULT FALSE,        -- 市场是否活跃（布林带宽度判断）
+    trend_15m BOOLEAN,                           -- 15m趋势方向（价格是否在EMA55之上）
+    trend_4h BOOLEAN,                            -- 4h趋势方向
+    multi_tf_aligned BOOLEAN DEFAULT FALSE,     -- 多时间框架是否对齐（15m和4h共振）
+    
+    -- 触发层结果（6个维度）
+    momentum_turn BOOLEAN DEFAULT FALSE,         -- MACD动量转折
+    ema_cross BOOLEAN DEFAULT FALSE,             -- EMA交叉
+    rsi_extreme BOOLEAN DEFAULT FALSE,           -- RSI极值
+    bb_breakout BOOLEAN DEFAULT FALSE,           -- 布林带突破
+    volume_surge BOOLEAN DEFAULT FALSE,           -- 成交量异常
+    price_pattern BOOLEAN DEFAULT FALSE,         -- 价格形态（吞没形态）
+    
+    -- 触发时的关键指标值（用于分析）
+    rsi_value DECIMAL(10, 4),                    -- 当前RSI值
+    macd_histogram DECIMAL(20, 8),               -- MACD柱状图值
+    volume_ratio DECIMAL(10, 4),                 -- 成交量比率（当前/平均）
+    bb_width_ratio DECIMAL(10, 4),              -- 布林带宽度比率（当前/平均）
+    
+    -- 确认层结果
+    volume_confirm BOOLEAN DEFAULT FALSE,        -- 成交量确认
+    bb_confirm BOOLEAN DEFAULT FALSE,             -- 布林带确认
+    
+    -- 检测结果
+    has_signal BOOLEAN NOT NULL DEFAULT FALSE,   -- 是否生成信号
+    signal_direction VARCHAR(10),                 -- 信号方向：LONG/SHORT/NONE
+    signal_strength VARCHAR(20),                 -- 信号强度：WEAK/MODERATE/STRONG/VERY_STRONG
+    position_size_multiplier DECIMAL(5, 2) DEFAULT 1.0,  -- 仓位倍数（RSI极值时加倍）
+    
+    -- 检测使用的数据量
+    kline_15m_count INTEGER NOT NULL,            -- 使用的15m K线数量
+    kline_4h_count INTEGER NOT NULL,             -- 使用的4h K线数量
+    kline_1d_count INTEGER,                      -- 使用的1d K线数量
+    
+    -- 元数据
+    detection_version VARCHAR(20) DEFAULT '1.0', -- 检测算法版本
+    created_at TIMESTAMPTZ DEFAULT NOW()         -- 记录创建时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_symbol ON market_detection_snapshots(symbol);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_time ON market_detection_snapshots(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_symbol_time ON market_detection_snapshots(symbol, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_has_signal ON market_detection_snapshots(has_signal, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_strength ON market_detection_snapshots(signal_strength, detected_at DESC);
+
+-- 表注释
+COMMENT ON TABLE market_detection_snapshots IS '市场检测快照表，存储每次检测的完整信息（无论是否有信号都保存，用于回溯分析）';
+COMMENT ON COLUMN market_detection_snapshots.symbol IS '币种名称：BTC, ETH等';
+COMMENT ON COLUMN market_detection_snapshots.detected_at IS '检测时间（UTC时区）';
+COMMENT ON COLUMN market_detection_snapshots.market_mode IS '市场模式：BULL/BEAR/NEUTRAL';
+COMMENT ON COLUMN market_detection_snapshots.has_signal IS '是否生成信号';
+COMMENT ON COLUMN market_detection_snapshots.signal_strength IS '信号强度：WEAK/MODERATE/STRONG/VERY_STRONG';
+
+-- ============================================
+-- 2.9 市场信号表 (market_signals)
+-- 说明: 存储最终生成的交易信号，只保存通过所有层级过滤的信号
+-- 主键: id
+-- 数据来源: 市场检测器（从market_detection_snapshots生成）
+-- 更新频率: 每15分钟（15m K线更新时，如果有信号）
+-- ============================================
+CREATE TABLE IF NOT EXISTS market_signals (
+    id BIGSERIAL PRIMARY KEY,                    -- 自增主键ID
+    snapshot_id BIGINT REFERENCES market_detection_snapshots(id),  -- 关联检测快照ID
+    
+    symbol VARCHAR(20) NOT NULL,                 -- 币种名称：BTC, ETH等
+    signal_type VARCHAR(20) NOT NULL,             -- 信号类型：LONG/SHORT
+    detected_at TIMESTAMPTZ NOT NULL,            -- 检测时间（UTC时区）
+    
+    -- 信号核心信息
+    price DECIMAL(20, 8) NOT NULL,               -- 检测时的价格
+    confidence_score DECIMAL(10, 2) NOT NULL,    -- 置信度分数（0-100，基于信号强度）
+    
+    -- 信号强度分级
+    signal_strength VARCHAR(20) NOT NULL,         -- WEAK/MODERATE/STRONG/VERY_STRONG
+    position_size_multiplier DECIMAL(5, 2) DEFAULT 1.0,  -- 仓位倍数（1.0=正常，2.0=加倍）
+    
+    -- 关键K线时间点
+    kline_15m_time TIMESTAMPTZ NOT NULL,         -- 15分钟K线时间
+    kline_4h_time TIMESTAMPTZ NOT NULL,          -- 4小时K线时间
+    
+    -- 信号触发原因（JSON格式，存储主要触发因素）
+    trigger_factors JSONB,                       -- 如：["momentum_turn", "volume_surge", "ema_cross"]
+    
+    -- 市场环境信息
+    market_mode VARCHAR(20),                     -- 市场模式：BULL/BEAR
+    multi_tf_aligned BOOLEAN DEFAULT FALSE,      -- 多时间框架是否对齐
+    
+    -- 关键指标快照（用于后续分析）
+    rsi_value DECIMAL(10, 4),                    -- RSI值
+    macd_histogram DECIMAL(20, 8),               -- MACD柱状图值
+    volume_ratio DECIMAL(10, 4),                 -- 成交量比率
+    
+    -- 预期目标（可选，后续可扩展）
+    target_price DECIMAL(20, 8),                 -- 目标价格（可选）
+    stop_loss_price DECIMAL(20, 8),              -- 止损价格（可选）
+    
+    -- 信号状态
+    status VARCHAR(20) DEFAULT 'PENDING',        -- PENDING/ACTIVE/EXPIRED/FILLED/CANCELLED
+    expired_at TIMESTAMPTZ,                      -- 信号过期时间（detected_at + 有效期）
+    
+    -- 关联信息
+    opportunity_score_id BIGINT,                  -- 关联机会评分ID（如果有）
+    trade_id BIGINT,                             -- 关联交易ID（如果已执行）
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),        -- 记录创建时间
+    updated_at TIMESTAMPTZ DEFAULT NOW()         -- 记录更新时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_signals_symbol ON market_signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_signals_time ON market_signals(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON market_signals(symbol, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_status ON market_signals(status, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_strength ON market_signals(signal_strength, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_confidence ON market_signals(confidence_score DESC, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_snapshot ON market_signals(snapshot_id);
+
+-- 表注释
+COMMENT ON TABLE market_signals IS '市场信号表，存储最终生成的交易信号（只保存通过所有层级过滤的信号）';
+COMMENT ON COLUMN market_signals.symbol IS '币种名称：BTC, ETH等';
+COMMENT ON COLUMN market_signals.signal_type IS '信号类型：LONG/SHORT';
+COMMENT ON COLUMN market_signals.confidence_score IS '置信度分数（0-100，基于信号强度）';
+COMMENT ON COLUMN market_signals.signal_strength IS '信号强度：WEAK/MODERATE/STRONG/VERY_STRONG';
+COMMENT ON COLUMN market_signals.status IS '信号状态：PENDING/ACTIVE/EXPIRED/FILLED/CANCELLED';
+COMMENT ON COLUMN market_signals.trigger_factors IS '触发因素（JSON数组），如：["momentum_turn", "volume_surge"]';
+
+-- ============================================
 -- 三、系统配置表
 -- 说明: 存储所有系统配置项，替代config.py中的硬编码配置
 -- ============================================
@@ -590,7 +740,29 @@ INSERT INTO system_config (config_key, value, value_type, description) VALUES
 ('LOG_LEVEL', 'INFO', 'string', '日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL'),
 ('LOG_FILE', 'logs/qwentradeai.log', 'string', '日志文件路径'),
 ('LOG_MAX_BYTES', '10485760', 'int', '单个日志文件最大大小（字节），默认10MB'),
-('LOG_BACKUP_COUNT', '5', 'int', '日志文件备份数量')
+('LOG_BACKUP_COUNT', '5', 'int', '日志文件备份数量'),
+
+-- 市场检测器配置
+-- 环境层参数
+('DETECTOR_EMA_TREND_PERIOD', '55', 'int', '市场检测器：用于趋势判断的EMA周期（环境层）'),
+('DETECTOR_BB_WIDTH_THRESHOLD', '0.5', 'float', '市场检测器：布林带宽度阈值（相对于20根平均值的倍数，低于此值认为市场不活跃）'),
+
+-- 触发层参数
+('DETECTOR_RSI_LONG_THRESHOLD', '80.0', 'float', '市场检测器：做多信号RSI上限（RSI低于此值才允许做多，防止极端过热）'),
+('DETECTOR_RSI_SHORT_THRESHOLD', '20.0', 'float', '市场检测器：做空信号RSI下限（RSI高于此值才允许做空，防止极端超卖）'),
+('DETECTOR_RSI_DOUBLE_POSITION_LONG', '50.0', 'float', '市场检测器：做多时RSI低于此值加倍仓位（更好的盈亏比）'),
+('DETECTOR_RSI_DOUBLE_POSITION_SHORT', '50.0', 'float', '市场检测器：做空时RSI高于此值加倍仓位（更好的盈亏比）'),
+
+-- 确认层参数
+('DETECTOR_VOLUME_STD_MULTIPLIER', '1.5', 'float', '市场检测器：成交量确认阈值（平均值 + 此倍数 × 标准差，降低此值可增加信号数量）'),
+
+-- 数据量参数
+('DETECTOR_KLINE_15M_COUNT', '100', 'int', '市场检测器：使用的15分钟K线数量'),
+('DETECTOR_KLINE_4H_COUNT', '60', 'int', '市场检测器：使用的4小时K线数量'),
+
+-- 其他参数
+('DETECTOR_ENABLE_MULTI_TF', 'true', 'boolean', '市场检测器：是否启用多时间框架确认（15m和4h共振加分）'),
+('DETECTOR_SIGNAL_EXPIRE_HOURS', '4', 'int', '市场检测器：信号有效期（小时，超过此时间信号自动过期）')
 
 ON CONFLICT (config_key) DO UPDATE SET
     value = EXCLUDED.value,
@@ -757,7 +929,11 @@ SELECT add_retention_policy('fear_greed_index'::regclass, INTERVAL '730 days', i
 --    - etf_flow_data（ETF资金流，保留730天）
 --    - fear_greed_index（恐惧贪婪指数，保留730天）
 -- 
--- 3. 系统配置表（1个）：
+-- 3. 市场检测表（2个）：
+--    - market_detection_snapshots（市场检测快照，保留180天）
+--    - market_signals（市场信号，保留365天）
+-- 
+-- 4. 系统配置表（1个）：
 --    - system_config（系统配置，永久保留）
 -- 
 -- 注意事项：
