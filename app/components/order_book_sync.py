@@ -70,54 +70,6 @@ class OrderBookSyncManager(threading.Thread):
             asks = data.get('asks', [])
             bids = data.get('bids', [])
             
-            # 输出数据格式信息用于验证
-            logger.info(f"========== {self.symbol} 盘口挂单数据抓取结果 ==========")
-            logger.info(f"时间: {now}")
-            logger.info(f"asks数量: {len(asks)}, bids数量: {len(bids)}")
-            
-            # 检查并输出前几个asks和bids的数据格式
-            if asks:
-                first_ask = asks[0]
-                logger.info(f"asks[0] 数据格式: {first_ask}")
-                logger.info(f"asks[0] 字段数量: {len(first_ask)}")
-                if len(first_ask) >= 3:
-                    logger.info(f"  - 深度价格: {first_ask[0]}")
-                    logger.info(f"  - 数量(合约张数/交易币数量): {first_ask[1]}")
-                    logger.info(f"  - 订单数量: {first_ask[2]}")
-                else:
-                    logger.warning(f"  ⚠️ asks[0] 字段数量不足3个，当前格式: {first_ask}")
-            
-            if bids:
-                first_bid = bids[0]
-                logger.info(f"bids[0] 数据格式: {first_bid}")
-                logger.info(f"bids[0] 字段数量: {len(first_bid)}")
-                if len(first_bid) >= 3:
-                    logger.info(f"  - 深度价格: {first_bid[0]}")
-                    logger.info(f"  - 数量(合约张数/交易币数量): {first_bid[1]}")
-                    logger.info(f"  - 订单数量: {first_bid[2]}")
-                else:
-                    logger.warning(f"  ⚠️ bids[0] 字段数量不足3个，当前格式: {first_bid}")
-            
-            # 验证数据格式是否符合文档要求
-            # 文档要求：["411.8", "10", "4"] - 价格、数量、订单数 (3个字段)
-            format_valid = True
-            if asks:
-                for i, ask in enumerate(asks[:5]):  # 检查前5个
-                    if len(ask) < 3:
-                        logger.warning(f"  ⚠️ asks[{i}] 格式不符合要求，应为3个字段，实际: {len(ask)}个，数据: {ask}")
-                        format_valid = False
-            
-            if bids:
-                for i, bid in enumerate(bids[:5]):  # 检查前5个
-                    if len(bid) < 3:
-                        logger.warning(f"  ⚠️ bids[{i}] 格式不符合要求，应为3个字段，实际: {len(bid)}个，数据: {bid}")
-                        format_valid = False
-            
-            if format_valid:
-                logger.info(f"✓ 数据格式验证通过，符合文档要求 (3个字段: 价格、数量、订单数)")
-            else:
-                logger.warning(f"⚠️ 数据格式验证未完全通过，请检查")
-            
             # 计算大单金额（档位数量超过平均值的2倍的档位，用于分析大单压力/支撑）
             large_ask_amount = None
             large_bid_amount = None
@@ -149,8 +101,6 @@ class OrderBookSyncManager(threading.Thread):
                     )
                     if large_bid_amount == 0:
                         large_bid_amount = None
-            
-            logger.info(f"==========================================")
             
             with self.db.get_session() as session:
                 if OrderBookRepository.insert_order_book(

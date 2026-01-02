@@ -5,7 +5,7 @@ from typing import Dict
 from fastapi import FastAPI
 from app.config import settings
 from app.utils.logger import logger
-from app.api.routes import api_test, kline_test, coinglass_test
+from app.api.routes import order_history_test, position_history_test, trading_test, pending_order
 from app.components.api_manager import APIManager
 from app.components.kline_sync import KlineSyncManager
 from app.components.funding_rate_sync import FundingRateSyncManager
@@ -16,14 +16,18 @@ from app.components.order_book_sync import OrderBookSyncManager
 from app.components.etf_flow_sync import ETFFlowSyncManager
 from app.components.fear_greed_sync import FearGreedSyncManager
 from app.components.liquidation_sync import LiquidationSyncManager
-# 持仓同步和OKX订单历史同步已删除
+from app.components.okx_order_websocket_client import OKXOrderWebSocketClient
+from app.okx.order_history_sync import OrderHistorySyncManager
+from app.okx.position_history_sync import PositionHistorySyncManager
+from app.trading.trading_manager import TradingManager
+from app.trading.pending_order_manager import PendingOrderManager
+# 持仓同步已删除
 # from app.components.position_manager import PositionManager
 # from app.components.position_sync import PositionSyncManager
-# from app.components.okx_orders_sync import OKXOrdersSyncManager
 # from app.components.okx_positions_history_sync import OKXPositionsHistorySyncManager
 # from app.components.risk_guard_thread import RiskGuardThread
-# AI和市场检测相关模块已删除
-# from app.layers.market_detector import MarketDetector, MarketDetectorConfig
+# AI和市场检测相关模块
+from app.layers.market_detector import MarketDetector
 # from app.layers.data_preparator import DataPreparator
 # from app.layers.ai_council import AICouncil
 # from app.layers.main_controller import MainController
@@ -42,9 +46,12 @@ app = FastAPI(
 )
 
 # 注册路由
-app.include_router(api_test.router)
-app.include_router(kline_test.router)
-app.include_router(coinglass_test.router)
+# from app.api.routes import market_detector_test
+# app.include_router(market_detector_test.router)  # 已隐藏
+# app.include_router(order_history_test.router)  # 已隐藏
+app.include_router(position_history_test.router)
+app.include_router(trading_test.router)
+app.include_router(pending_order.router)
 
 # 全局组件实例
 api_manager: APIManager = None
@@ -57,13 +64,17 @@ order_book_sync_managers: Dict[str, OrderBookSyncManager] = {}  # 每个币种�
 etf_flow_sync_managers: Dict[str, ETFFlowSyncManager] = {}  # 每个币种一个ETF资金流同步管理器
 fear_greed_sync_manager: FearGreedSyncManager = None  # 恐惧贪婪指数同步管理器（全局唯一）
 liquidation_sync_managers: Dict[str, LiquidationSyncManager] = {}  # 每个币种一个爆仓历史同步管理器
-# 持仓同步和OKX订单历史同步已删除
+order_history_sync_manager: OrderHistorySyncManager = None  # OKX历史订单同步管理器（全局唯一）
+position_history_sync_manager: PositionHistorySyncManager = None  # OKX仓位历史同步管理器（全局唯一）
+order_websocket_client: OKXOrderWebSocketClient = None  # 持仓WebSocket客户端
+trading_manager: TradingManager = None  # 交易管理器
+pending_order_manager: PendingOrderManager = None  # 挂单管理器
+# 持仓同步已删除
 # position_sync_manager: PositionSyncManager = None  # 持仓同步管理器（全局唯一）
-# okx_orders_sync_manager: OKXOrdersSyncManager = None  # OKX订单历史同步管理器（全局唯一）
 # okx_positions_history_sync_manager: OKXPositionsHistorySyncManager = None  # OKX历史持仓同步管理器（全局唯一）
 # position_manager: PositionManager = None  # 持仓管理器
-# AI和市场检测相关组件已删除
-# market_detector: MarketDetector = None  # 市场检测器
+# AI和市场检测相关组件
+market_detectors: Dict[str, MarketDetector] = {}  # 市场检测器（每个币种一个）
 # data_preparator: DataPreparator = None  # 数据准备器
 # ai_council: AICouncil = None  # AI委员会
 # trade_executor: TradeExecutor = None  # 交易执行器
@@ -78,10 +89,13 @@ async def startup():
     global kline_sync_managers, funding_rate_sync_managers
     global open_interest_sync_managers, market_sentiment_sync_managers
     global order_book_sync_managers, etf_flow_sync_managers, fear_greed_sync_manager
-    # 持仓同步和OKX订单历史同步已删除
-    # global position_sync_manager, okx_orders_sync_manager, okx_positions_history_sync_manager, position_manager
-    # AI和市场检测相关组件已删除
-    # global market_detector, data_preparator, ai_council, trade_executor, main_controller, risk_guard_thread
+    global liquidation_sync_managers, order_history_sync_manager, position_history_sync_manager
+    global order_websocket_client, trading_manager, pending_order_manager
+    # 持仓同步已删除
+    # global position_sync_manager, okx_positions_history_sync_manager, position_manager
+    # AI和市场检测相关组件
+    global market_detectors
+    # global data_preparator, ai_council, trade_executor, main_controller, risk_guard_thread
     
     logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
     
@@ -97,11 +111,22 @@ async def startup():
         coinglass_client = CoinGlassClient(settings)
         logger.info("CoinGlass客户端初始化完成")
         
-        # 为每个币种创建K线同步管理器
+        # 初始化市场检测器（目前仅ETH，需要在K线同步管理器之前初始化）
+        detector_symbols = ['ETH']  # 目前只给ETH创建检测器
+        logger.info(f"初始化市场检测器（币种: {', '.join(detector_symbols)}）...")
         trading_symbols = settings.get_trading_symbols()
+        for symbol in detector_symbols:
+            if symbol in trading_symbols:
+                market_detector = MarketDetector(symbol)
+                market_detectors[symbol] = market_detector
+                logger.info(f"{symbol} 市场检测器已初始化")
+        
+        # 为每个币种创建K线同步管理器
         logger.info(f"初始化K线同步管理器（币种: {', '.join(trading_symbols)}）...")
         for symbol in trading_symbols:
-            kline_sync_manager = KlineSyncManager(api_manager, symbol)
+            # 如果该币种有市场检测器，传入检测器实例
+            market_detector = market_detectors.get(symbol)
+            kline_sync_manager = KlineSyncManager(api_manager, symbol, market_detector=market_detector)
             kline_sync_manager.start()
             kline_sync_managers[symbol] = kline_sync_manager
             logger.info(f"{symbol} K线同步管理器已启动")
@@ -162,12 +187,43 @@ async def startup():
             liquidation_sync_managers[symbol] = liquidation_sync_manager
             logger.info(f"{symbol} 爆仓历史同步管理器已启动")
         
-        # 持仓同步和OKX订单历史同步已删除
-        # 系统现在只负责基础数据同步，不进行持仓和订单历史同步
+        # 创建OKX历史订单同步管理器（全局唯一）
+        # 订单数据仅通过API拉取，每20秒执行一次
+        logger.info("初始化OKX历史订单同步管理器...")
+        order_history_sync_manager = OrderHistorySyncManager(api_manager)
+        order_history_sync_manager.start()
+        logger.info("OKX历史订单同步管理器已启动")
         
-        # AI和市场检测相关组件已删除
-        # 系统现在只负责数据同步，不进行AI分析和交易执行
-        logger.info("AI分析和市场检测功能已禁用，系统仅保留基础数据同步功能")
+        # 创建OKX仓位历史同步管理器（全局唯一）
+        logger.info("初始化OKX仓位历史同步管理器...")
+        position_history_sync_manager = PositionHistorySyncManager(api_manager)
+        position_history_sync_manager.start()
+        logger.info("OKX仓位历史同步管理器已启动")
+        
+        # 持仓同步已删除
+        # 系统现在只负责基础数据同步，不进行持仓同步
+        
+        # AI分析和交易执行相关组件已删除
+        # 系统现在只负责数据同步和市场检测，不进行AI分析和交易执行
+        
+        # 设置市场检测器到测试接口（已隐藏）
+        # market_detector_test.set_market_detectors(market_detectors)
+        
+        # 初始化交易管理器（需要在WebSocket客户端之前初始化，以便注入依赖）
+        logger.info("初始化交易管理器...")
+        trading_manager = TradingManager(api_manager)
+        logger.info("交易管理器已初始化")
+        
+        # 初始化持仓WebSocket客户端（自动启动）
+        logger.info("初始化持仓WebSocket客户端...")
+        order_websocket_client = OKXOrderWebSocketClient(trading_manager=trading_manager)
+        order_websocket_client.start()  # 自动启动
+        logger.info("持仓WebSocket客户端已启动")
+        
+        # 初始化挂单管理器
+        logger.info("初始化挂单管理器...")
+        pending_order_manager = PendingOrderManager()
+        logger.info("挂单管理器已初始化")
         
         logger.info("数据库连接: 已配置")
         logger.info("配置加载: 成功")
@@ -184,14 +240,39 @@ async def shutdown():
     global kline_sync_managers, funding_rate_sync_managers, api_manager
     global open_interest_sync_managers, market_sentiment_sync_managers
     global order_book_sync_managers, etf_flow_sync_managers, fear_greed_sync_manager
-    global liquidation_sync_managers
-    # 持仓同步和OKX订单历史同步已删除
-    # global position_sync_manager, okx_orders_sync_manager, okx_positions_history_sync_manager
+    global liquidation_sync_managers, order_history_sync_manager, position_history_sync_manager
+    global order_websocket_client
+    # 持仓同步已删除
+    # global position_sync_manager, okx_positions_history_sync_manager
     
     logger.info(f"{settings.APP_NAME} 正在关闭...")
     
     try:
-        # 持仓同步和OKX订单历史同步已删除，无需停止
+        # 停止OKX仓位历史同步线程
+        if position_history_sync_manager:
+            logger.info("正在停止OKX仓位历史同步线程...")
+            try:
+                position_history_sync_manager.stop()
+                position_history_sync_manager.join(timeout=5)
+                if position_history_sync_manager.is_alive():
+                    logger.warning("OKX仓位历史同步线程未在5秒内停止")
+                else:
+                    logger.info("OKX仓位历史同步线程已停止")
+            except Exception as e:
+                logger.error(f"停止OKX仓位历史同步线程失败: {e}", exc_info=True)
+        
+        # 停止OKX历史订单同步线程
+        if order_history_sync_manager:
+            logger.info("正在停止OKX历史订单同步线程...")
+            try:
+                order_history_sync_manager.stop()
+                order_history_sync_manager.join(timeout=5)
+                if order_history_sync_manager.is_alive():
+                    logger.warning("OKX历史订单同步线程未在5秒内停止")
+                else:
+                    logger.info("OKX历史订单同步线程已停止")
+            except Exception as e:
+                logger.error(f"停止OKX历史订单同步线程失败: {e}", exc_info=True)
         
         # 停止恐惧贪婪指数同步线程
         if fear_greed_sync_manager:
@@ -305,6 +386,15 @@ async def shutdown():
                     logger.error(f"停止{symbol} K线同步线程失败: {e}", exc_info=True)
         
         # AI和市场检测相关组件已删除，无需停止
+        
+        # 关闭持仓WebSocket客户端
+        if order_websocket_client:
+            logger.info("正在关闭持仓WebSocket客户端...")
+            try:
+                order_websocket_client.stop()
+                logger.info("持仓WebSocket客户端已关闭")
+            except Exception as e:
+                logger.error(f"关闭持仓WebSocket客户端失败: {e}", exc_info=True)
         
         # 关闭API管理器（不等待队列完成，直接停止）
         if api_manager:

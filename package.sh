@@ -60,11 +60,11 @@ if [ -d "database" ]; then
     cp -r database "$PACKAGE_DIR/"
 fi
 
-# 3. 复制 docs 目录（文档）
-if [ -d "docs" ]; then
-    echo "  - 复制 docs/ 目录"
-    cp -r docs "$PACKAGE_DIR/"
-fi
+# 3. docs 目录不打包（文档文件，部署时不需要）
+# if [ -d "docs" ]; then
+#     echo "  - 复制 docs/ 目录"
+#     cp -r docs "$PACKAGE_DIR/"
+# fi
 
 # 4. 复制 requirements.txt
 if [ -f "requirements.txt" ]; then
@@ -78,7 +78,12 @@ if [ -f "README.md" ]; then
     cp README.md "$PACKAGE_DIR/"
 fi
 
-# 6. 复制 .gitignore（用于参考）
+# 6. 不复制测试和文档文件
+# test_cases.md - 测试用例文档，部署时不需要
+# verify_database.py - 验证脚本，部署时不需要
+# GIT_PUSH_GUIDE.md - Git推送指南，部署时不需要
+
+# 7. 复制 .gitignore（用于参考）
 if [ -f ".gitignore" ]; then
     echo "  - 复制 .gitignore"
     cp .gitignore "$PACKAGE_DIR/"
@@ -97,6 +102,10 @@ echo "  - .DS_Store (系统文件)"
 echo "  - tests/ (测试文件)"
 echo "  - .cursor/ (IDE配置)"
 echo "  - .btignore (宝塔配置)"
+echo "  - docs/ (项目文档)"
+echo "  - test_cases.md (测试用例文档)"
+echo "  - verify_database.py (验证脚本)"
+echo "  - GIT_PUSH_GUIDE.md (Git推送指南)"
 echo ""
 
 # 创建打包信息文件
@@ -140,11 +149,15 @@ echo ""
 echo -e "${YELLOW}打包内容：${NC}"
 echo "  ✓ app/ - 应用代码"
 echo "  ✓ database/ - 数据库SQL文件"
-echo "  ✓ docs/ - 项目文档"
 echo "  ✓ requirements.txt - Python依赖"
 echo "  ✓ README.md - 项目说明（如果存在）"
 echo "  ✓ .gitignore - Git忽略规则"
 echo "  ✓ PACKAGE_INFO.txt - 打包信息"
+echo ""
+echo -e "${YELLOW}已排除：${NC}"
+echo "  ✗ docs/ - 项目文档（部署时不需要）"
+echo "  ✗ test_cases.md - 测试用例文档（部署时不需要）"
+echo "  ✗ verify_database.py - 验证脚本（部署时不需要）"
 echo ""
 echo -e "${YELLOW}部署说明：${NC}"
 echo "  1. 解压: tar -xzf ${PACKAGE_NAME}"

@@ -475,6 +475,558 @@ COMMENT ON COLUMN fear_greed_index.created_at IS '记录创建时间';
 COMMENT ON COLUMN fear_greed_index.updated_at IS '记录更新时间';
 
 -- ============================================
+-- 2.8 市场检测快照表 (market_detection_snapshots)
+-- 说明: 存储每次市场检测的完整快照，无论是否生成信号都保存，用于回溯分析
+-- 主键: id
+-- 数据来源: 市场检测器
+-- 更新频率: 每15分钟（15m K线更新时）
+-- ============================================
+CREATE TABLE IF NOT EXISTS market_detection_snapshots (
+    id BIGSERIAL PRIMARY KEY,                    -- 自增主键ID
+    symbol VARCHAR(20) NOT NULL,                 -- 币种名称：BTC, ETH等
+    detected_at TIMESTAMPTZ NOT NULL,            -- 检测时间（UTC时区）
+    
+    -- 检测时的价格信息
+    price DECIMAL(20, 8) NOT NULL,               -- 检测时的价格
+    price_change_24h DECIMAL(10, 4),             -- 24小时价格变化百分比
+    
+    -- 使用的K线时间点（用于关联）
+    kline_15m_time TIMESTAMPTZ NOT NULL,         -- 15分钟K线时间
+    kline_4h_time TIMESTAMPTZ NOT NULL,          -- 4小时K线时间
+    kline_1d_time TIMESTAMPTZ,                   -- 日线K线时间（可选）
+    
+    -- 环境层判断结果
+    market_mode VARCHAR(20),                     -- 市场模式：BULL/BEAR/NEUTRAL
+    market_active BOOLEAN DEFAULT FALSE,        -- 市场是否活跃（布林带宽度判断）
+    trend_15m BOOLEAN,                           -- 15m趋势方向（价格是否在EMA55之上）
+    trend_4h BOOLEAN,                            -- 4h趋势方向
+    multi_tf_aligned BOOLEAN DEFAULT FALSE,     -- 多时间框架是否对齐（15m和4h共振）
+    
+    -- 触发层结果（6个维度）
+    momentum_turn BOOLEAN DEFAULT FALSE,         -- MACD动量转折
+    ema_cross BOOLEAN DEFAULT FALSE,             -- EMA交叉
+    rsi_extreme BOOLEAN DEFAULT FALSE,           -- RSI极值
+    bb_breakout BOOLEAN DEFAULT FALSE,           -- 布林带突破
+    volume_surge BOOLEAN DEFAULT FALSE,           -- 成交量异常
+    price_pattern BOOLEAN DEFAULT FALSE,         -- 价格形态（吞没形态）
+    
+    -- 触发时的关键指标值（用于分析）
+    rsi_value DECIMAL(10, 4),                    -- 当前RSI值
+    macd_histogram DECIMAL(20, 8),               -- MACD柱状图值
+    volume_ratio DECIMAL(10, 4),                 -- 成交量比率（当前/平均）
+    bb_width_ratio DECIMAL(10, 4),              -- 布林带宽度比率（当前/平均）
+    
+    -- 确认层结果
+    volume_confirm BOOLEAN DEFAULT FALSE,        -- 成交量确认
+    bb_confirm BOOLEAN DEFAULT FALSE,             -- 布林带确认
+    
+    -- 检测结果
+    has_signal BOOLEAN NOT NULL DEFAULT FALSE,   -- 是否生成信号
+    signal_direction VARCHAR(10),                 -- 信号方向：LONG/SHORT/NONE
+    signal_strength VARCHAR(20),                 -- 信号强度：WEAK/MODERATE/STRONG/VERY_STRONG
+    position_size_multiplier DECIMAL(5, 2) DEFAULT 1.0,  -- 仓位倍数（RSI极值时加倍）
+    
+    -- 检测使用的数据量
+    kline_15m_count INTEGER NOT NULL,            -- 使用的15m K线数量
+    kline_4h_count INTEGER NOT NULL,             -- 使用的4h K线数量
+    kline_1d_count INTEGER,                      -- 使用的1d K线数量
+    
+    -- 元数据
+    detection_version VARCHAR(20) DEFAULT '1.0', -- 检测算法版本
+    created_at TIMESTAMPTZ DEFAULT NOW()         -- 记录创建时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_symbol ON market_detection_snapshots(symbol);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_time ON market_detection_snapshots(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_symbol_time ON market_detection_snapshots(symbol, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_has_signal ON market_detection_snapshots(has_signal, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_detection_snapshot_strength ON market_detection_snapshots(signal_strength, detected_at DESC);
+
+-- 表注释
+COMMENT ON TABLE market_detection_snapshots IS '市场检测快照表，存储每次检测的完整信息（无论是否有信号都保存，用于回溯分析）';
+
+-- 字段注释
+COMMENT ON COLUMN market_detection_snapshots.id IS '自增主键ID';
+COMMENT ON COLUMN market_detection_snapshots.symbol IS '币种名称：BTC, ETH等';
+COMMENT ON COLUMN market_detection_snapshots.detected_at IS '检测时间（UTC时区）';
+COMMENT ON COLUMN market_detection_snapshots.price IS '检测时的价格';
+COMMENT ON COLUMN market_detection_snapshots.price_change_24h IS '24小时价格变化百分比';
+COMMENT ON COLUMN market_detection_snapshots.kline_15m_time IS '15分钟K线时间（用于关联）';
+COMMENT ON COLUMN market_detection_snapshots.kline_4h_time IS '4小时K线时间（用于关联）';
+COMMENT ON COLUMN market_detection_snapshots.kline_1d_time IS '日线K线时间（可选，用于关联）';
+COMMENT ON COLUMN market_detection_snapshots.market_mode IS '市场模式：BULL/BEAR/NEUTRAL（基于15m价格vs EMA55）';
+COMMENT ON COLUMN market_detection_snapshots.market_active IS '市场是否活跃（基于布林带宽度判断，当前宽度>=平均宽度×阈值）';
+COMMENT ON COLUMN market_detection_snapshots.trend_15m IS '15m趋势方向（True=上涨/价格>EMA55，False=下跌/价格<EMA55）';
+COMMENT ON COLUMN market_detection_snapshots.trend_4h IS '4h趋势方向（True=上涨/价格>EMA21，False=下跌/价格<EMA21）';
+COMMENT ON COLUMN market_detection_snapshots.multi_tf_aligned IS '多时间框架是否对齐（15m和4h趋势是否一致）';
+COMMENT ON COLUMN market_detection_snapshots.momentum_turn IS 'MACD动量转折（触发层维度1）';
+COMMENT ON COLUMN market_detection_snapshots.ema_cross IS 'EMA交叉（触发层维度2：EMA9上穿/下穿EMA21）';
+COMMENT ON COLUMN market_detection_snapshots.rsi_extreme IS 'RSI极值（触发层维度3：BULL模式RSI<80允许做多，BEAR模式RSI>20允许做空）';
+COMMENT ON COLUMN market_detection_snapshots.bb_breakout IS '布林带突破（触发层维度4：BULL模式价格>上轨，BEAR模式价格<下轨）';
+COMMENT ON COLUMN market_detection_snapshots.volume_surge IS '成交量异常（触发层维度5：当前成交量>平均值+1.5×标准差）';
+COMMENT ON COLUMN market_detection_snapshots.price_pattern IS '价格形态（触发层维度6：吞没形态）';
+COMMENT ON COLUMN market_detection_snapshots.rsi_value IS '当前RSI值（用于分析）';
+COMMENT ON COLUMN market_detection_snapshots.macd_histogram IS 'MACD柱状图值（用于分析）';
+COMMENT ON COLUMN market_detection_snapshots.volume_ratio IS '成交量比率（当前成交量/平均成交量）';
+COMMENT ON COLUMN market_detection_snapshots.bb_width_ratio IS '布林带宽度比率（当前宽度/平均宽度）';
+COMMENT ON COLUMN market_detection_snapshots.volume_confirm IS '成交量确认（确认层：当前成交量>平均值+1.5×标准差）';
+COMMENT ON COLUMN market_detection_snapshots.bb_confirm IS '布林带确认（确认层：当前宽度>平均宽度×1.2）';
+COMMENT ON COLUMN market_detection_snapshots.has_signal IS '是否生成信号（通过所有层级过滤后生成）';
+COMMENT ON COLUMN market_detection_snapshots.signal_direction IS '信号方向：LONG/SHORT/NONE';
+COMMENT ON COLUMN market_detection_snapshots.signal_strength IS '信号强度：WEAK/MODERATE/STRONG/VERY_STRONG（基于触发维度数量、多时间框架对齐、确认层结果）';
+COMMENT ON COLUMN market_detection_snapshots.position_size_multiplier IS '仓位倍数（1.0=正常，2.0=加倍，RSI极值时加倍）';
+COMMENT ON COLUMN market_detection_snapshots.kline_15m_count IS '使用的15m K线数量（用于检测）';
+COMMENT ON COLUMN market_detection_snapshots.kline_4h_count IS '使用的4h K线数量（用于检测）';
+COMMENT ON COLUMN market_detection_snapshots.kline_1d_count IS '使用的1d K线数量（可选）';
+COMMENT ON COLUMN market_detection_snapshots.detection_version IS '检测算法版本（用于回溯分析）';
+COMMENT ON COLUMN market_detection_snapshots.created_at IS '记录创建时间';
+
+-- ============================================
+-- 2.9 市场信号表 (market_signals)
+-- 说明: 存储最终生成的交易信号，只保存通过所有层级过滤的信号
+-- 主键: id
+-- 数据来源: 市场检测器（从market_detection_snapshots生成）
+-- 更新频率: 每15分钟（15m K线更新时，如果有信号）
+-- ============================================
+CREATE TABLE IF NOT EXISTS market_signals (
+    id BIGSERIAL PRIMARY KEY,                    -- 自增主键ID
+    snapshot_id BIGINT REFERENCES market_detection_snapshots(id),  -- 关联检测快照ID
+    
+    symbol VARCHAR(20) NOT NULL,                 -- 币种名称：BTC, ETH等
+    signal_type VARCHAR(20) NOT NULL,             -- 信号类型：LONG/SHORT
+    detected_at TIMESTAMPTZ NOT NULL,            -- 检测时间（UTC时区）
+    
+    -- 信号核心信息
+    price DECIMAL(20, 8) NOT NULL,               -- 检测时的价格
+    confidence_score DECIMAL(10, 2) NOT NULL,    -- 置信度分数（0-100，基于信号强度）
+    
+    -- 信号强度分级
+    signal_strength VARCHAR(20) NOT NULL,         -- WEAK/MODERATE/STRONG/VERY_STRONG
+    position_size_multiplier DECIMAL(5, 2) DEFAULT 1.0,  -- 仓位倍数（1.0=正常，2.0=加倍）
+    
+    -- 关键K线时间点
+    kline_15m_time TIMESTAMPTZ NOT NULL,         -- 15分钟K线时间
+    kline_4h_time TIMESTAMPTZ NOT NULL,          -- 4小时K线时间
+    
+    -- 信号触发原因（JSON格式，存储主要触发因素）
+    trigger_factors JSONB,                       -- 如：["momentum_turn", "volume_surge", "ema_cross"]
+    
+    -- 市场环境信息
+    market_mode VARCHAR(20),                     -- 市场模式：BULL/BEAR
+    multi_tf_aligned BOOLEAN DEFAULT FALSE,      -- 多时间框架是否对齐
+    
+    -- 关键指标快照（用于后续分析）
+    rsi_value DECIMAL(10, 4),                    -- RSI值
+    macd_histogram DECIMAL(20, 8),               -- MACD柱状图值
+    volume_ratio DECIMAL(10, 4),                 -- 成交量比率
+    
+    -- 预期目标（可选，后续可扩展）
+    target_price DECIMAL(20, 8),                 -- 目标价格（可选）
+    stop_loss_price DECIMAL(20, 8),              -- 止损价格（可选）
+    
+    -- 信号状态
+    status VARCHAR(20) DEFAULT 'PENDING',        -- PENDING/ACTIVE/EXPIRED/FILLED/CANCELLED
+    expired_at TIMESTAMPTZ,                      -- 信号过期时间（detected_at + 有效期）
+    
+    -- 关联信息
+    opportunity_score_id BIGINT,                  -- 关联机会评分ID（如果有）
+    trade_id VARCHAR(32),                        -- 关联交易ID（clOrdId，如果已执行）
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),        -- 记录创建时间
+    updated_at TIMESTAMPTZ DEFAULT NOW()         -- 记录更新时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_signals_symbol ON market_signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_signals_time ON market_signals(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON market_signals(symbol, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_status ON market_signals(status, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_strength ON market_signals(signal_strength, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_confidence ON market_signals(confidence_score DESC, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_snapshot ON market_signals(snapshot_id);
+
+-- 表注释
+COMMENT ON TABLE market_signals IS '市场信号表，存储最终生成的交易信号（只保存通过所有层级过滤的信号）';
+
+-- 字段注释
+COMMENT ON COLUMN market_signals.id IS '自增主键ID';
+COMMENT ON COLUMN market_signals.snapshot_id IS '关联检测快照ID（外键关联market_detection_snapshots.id）';
+COMMENT ON COLUMN market_signals.symbol IS '币种名称：BTC, ETH等';
+COMMENT ON COLUMN market_signals.signal_type IS '信号类型：LONG/SHORT';
+COMMENT ON COLUMN market_signals.detected_at IS '检测时间（UTC时区）';
+COMMENT ON COLUMN market_signals.price IS '检测时的价格';
+COMMENT ON COLUMN market_signals.confidence_score IS '置信度分数（0-100，基于信号强度：触发维度×15 + 多时间框架对齐×10 + 成交量确认×15 + 布林带确认×15）';
+COMMENT ON COLUMN market_signals.signal_strength IS '信号强度：WEAK/MODERATE/STRONG/VERY_STRONG（基于触发维度数量、多时间框架对齐、确认层结果）';
+COMMENT ON COLUMN market_signals.position_size_multiplier IS '仓位倍数（1.0=正常，2.0=加倍，RSI极值时加倍）';
+COMMENT ON COLUMN market_signals.kline_15m_time IS '15分钟K线时间（用于关联）';
+COMMENT ON COLUMN market_signals.kline_4h_time IS '4小时K线时间（用于关联）';
+COMMENT ON COLUMN market_signals.trigger_factors IS '触发因素（JSON数组），如：["momentum_turn", "volume_surge", "ema_cross"]';
+COMMENT ON COLUMN market_signals.market_mode IS '市场模式：BULL/BEAR（检测时的市场环境）';
+COMMENT ON COLUMN market_signals.multi_tf_aligned IS '多时间框架是否对齐（15m和4h趋势是否一致）';
+COMMENT ON COLUMN market_signals.rsi_value IS 'RSI值（检测时的RSI值，用于后续分析）';
+COMMENT ON COLUMN market_signals.macd_histogram IS 'MACD柱状图值（检测时的MACD histogram值）';
+COMMENT ON COLUMN market_signals.volume_ratio IS '成交量比率（当前成交量/平均成交量）';
+COMMENT ON COLUMN market_signals.target_price IS '目标价格（可选，后续可扩展）';
+COMMENT ON COLUMN market_signals.stop_loss_price IS '止损价格（可选，后续可扩展）';
+COMMENT ON COLUMN market_signals.status IS '信号状态：PENDING/ACTIVE/EXPIRED/FILLED/CANCELLED';
+COMMENT ON COLUMN market_signals.expired_at IS '信号过期时间（detected_at + 有效期，默认4小时）';
+COMMENT ON COLUMN market_signals.opportunity_score_id IS '关联机会评分ID（如果有）';
+COMMENT ON COLUMN market_signals.trade_id IS '关联交易ID（如果已执行交易）';
+COMMENT ON COLUMN market_signals.created_at IS '记录创建时间';
+COMMENT ON COLUMN market_signals.updated_at IS '记录更新时间';
+
+-- ============================================
+-- 2.10 OKX历史订单表 (order_history)
+-- 说明: 存储OKX交易所的历史订单数据（永久保存）
+-- 主键: ordId
+-- 数据来源: OKX API /api/v5/trade/orders-history-archive
+-- 更新频率: 每1分钟同步一次
+-- ============================================
+CREATE TABLE IF NOT EXISTS order_history (
+    -- 主键
+    ord_id VARCHAR(50) PRIMARY KEY,             -- 订单ID（OKX返回的ordId）
+    
+    -- 基础信息
+    cl_ord_id VARCHAR(50),                      -- 客户端订单ID
+    tag VARCHAR(50),                            -- 订单标签
+    inst_id VARCHAR(50) NOT NULL,               -- 产品ID（如BTC-USDT-SWAP）
+    symbol VARCHAR(20) NOT NULL,                 -- 币种名称（从instId提取，如BTC、ETH）
+    inst_type VARCHAR(20) NOT NULL,             -- 产品类型：SPOT/MARGIN/SWAP/FUTURES/OPTION
+    ord_type VARCHAR(20),                       -- 订单类型：limit/market/post_only/fok/ioc等
+    category VARCHAR(50),                       -- 订单种类：normal/tdg/twap/vwap/iceberg等
+    
+    -- 订单参数
+    sz DECIMAL(20, 8),                          -- 订单数量
+    px DECIMAL(20, 8),                          -- 订单价格
+    side VARCHAR(10),                           -- 订单方向：buy/sell
+    pos_side VARCHAR(10),                       -- 持仓方向：long/short/net
+    td_mode VARCHAR(20),                        -- 交易模式：cash/cross/isolated
+    lever VARCHAR(10),                           -- 杠杆倍数
+    
+    -- 成交信息
+    acc_fill_sz DECIMAL(20, 8),                 -- 累计成交数量
+    fill_px DECIMAL(20, 8),                    -- 最新成交价格
+    fill_time_ms BIGINT,                        -- 最新成交时间（毫秒时间戳）
+    fill_time TIMESTAMPTZ,                      -- 最新成交时间（格式化后）
+    trade_id VARCHAR(50),                       -- 最新成交ID
+    avg_px DECIMAL(20, 8),                      -- 成交均价
+    state VARCHAR(20),                          -- 订单状态：canceled/filled/partially_filled等
+    
+    -- 止盈止损
+    tp_trigger_px DECIMAL(20, 8),              -- 止盈触发价格
+    tp_ord_px DECIMAL(20, 8),                   -- 止盈委托价格
+    sl_trigger_px DECIMAL(20, 8),              -- 止损触发价格
+    sl_ord_px DECIMAL(20, 8),                   -- 止损委托价格
+    
+    -- 费用和收益
+    fee DECIMAL(20, 8),                         -- 手续费数量
+    fee_ccy VARCHAR(10),                         -- 手续费币种
+    rebate DECIMAL(20, 8),                      -- 返佣数量
+    rebate_ccy VARCHAR(10),                      -- 返佣币种
+    pnl DECIMAL(20, 8),                         -- 收益
+    
+    -- 时间字段（同时存储毫秒时间戳和格式化时间）
+    c_time_ms BIGINT NOT NULL,                  -- 订单创建时间（毫秒时间戳）
+    c_time TIMESTAMPTZ NOT NULL,                -- 订单创建时间（格式化后）
+    u_time_ms BIGINT NOT NULL,                  -- 订单更新时间（毫秒时间戳）
+    u_time TIMESTAMPTZ NOT NULL,                -- 订单更新时间（格式化后）
+    
+    -- 原始数据
+    raw_data JSONB,                             -- 完整原始JSON数据（存储OKX API返回的完整响应）
+    
+    -- 系统字段
+    created_at TIMESTAMPTZ DEFAULT NOW(),       -- 记录创建时间
+    updated_at TIMESTAMPTZ DEFAULT NOW()        -- 记录更新时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_order_history_symbol ON order_history(symbol);
+CREATE INDEX IF NOT EXISTS idx_order_history_inst_id ON order_history(inst_id);
+CREATE INDEX IF NOT EXISTS idx_order_history_state ON order_history(state);
+CREATE INDEX IF NOT EXISTS idx_order_history_c_time ON order_history(c_time DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_u_time ON order_history(u_time DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_symbol_time ON order_history(symbol, c_time DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_inst_id_time ON order_history(inst_id, c_time DESC);
+CREATE INDEX IF NOT EXISTS idx_order_history_cl_ord_id ON order_history(cl_ord_id);
+-- 添加fill_time相关索引（用于cl_ord_id匹配查询优化）
+CREATE INDEX IF NOT EXISTS idx_order_history_fill_time ON order_history(fill_time DESC) WHERE fill_time IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_order_history_symbol_pos_side_fill_time ON order_history(symbol, pos_side, fill_time DESC) WHERE fill_time IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_order_history_cl_ord_id_side_pos_side_fill_time ON order_history(cl_ord_id, side, pos_side, fill_time DESC) WHERE fill_time IS NOT NULL;
+
+-- 表注释
+COMMENT ON TABLE order_history IS 'OKX历史订单表，存储OKX交易所的历史订单数据（永久保存，每1分钟同步一次）';
+COMMENT ON COLUMN order_history.ord_id IS '订单ID（主键，OKX返回的ordId）';
+COMMENT ON COLUMN order_history.cl_ord_id IS '客户端订单ID';
+COMMENT ON COLUMN order_history.tag IS '订单标签';
+COMMENT ON COLUMN order_history.inst_id IS '产品ID（如BTC-USDT-SWAP）';
+COMMENT ON COLUMN order_history.symbol IS '币种名称（从instId提取，如BTC、ETH）';
+COMMENT ON COLUMN order_history.inst_type IS '产品类型：SPOT/MARGIN/SWAP/FUTURES/OPTION';
+COMMENT ON COLUMN order_history.ord_type IS '订单类型：limit/market/post_only/fok/ioc等';
+COMMENT ON COLUMN order_history.category IS '订单种类：normal/tdg/twap/vwap/iceberg等';
+COMMENT ON COLUMN order_history.sz IS '订单数量';
+COMMENT ON COLUMN order_history.px IS '订单价格';
+COMMENT ON COLUMN order_history.side IS '订单方向：buy/sell';
+COMMENT ON COLUMN order_history.pos_side IS '持仓方向：long/short/net';
+COMMENT ON COLUMN order_history.td_mode IS '交易模式：cash/cross/isolated';
+COMMENT ON COLUMN order_history.lever IS '杠杆倍数';
+COMMENT ON COLUMN order_history.acc_fill_sz IS '累计成交数量';
+COMMENT ON COLUMN order_history.fill_px IS '最新成交价格';
+COMMENT ON COLUMN order_history.fill_time_ms IS '最新成交时间（毫秒时间戳）';
+COMMENT ON COLUMN order_history.fill_time IS '最新成交时间（格式化后）';
+COMMENT ON COLUMN order_history.trade_id IS '最新成交ID';
+COMMENT ON COLUMN order_history.avg_px IS '成交均价';
+COMMENT ON COLUMN order_history.state IS '订单状态：canceled/filled/partially_filled等';
+COMMENT ON COLUMN order_history.tp_trigger_px IS '止盈触发价格';
+COMMENT ON COLUMN order_history.tp_ord_px IS '止盈委托价格';
+COMMENT ON COLUMN order_history.sl_trigger_px IS '止损触发价格';
+COMMENT ON COLUMN order_history.sl_ord_px IS '止损委托价格';
+COMMENT ON COLUMN order_history.fee IS '手续费数量';
+COMMENT ON COLUMN order_history.fee_ccy IS '手续费币种';
+COMMENT ON COLUMN order_history.rebate IS '返佣数量';
+COMMENT ON COLUMN order_history.rebate_ccy IS '返佣币种';
+COMMENT ON COLUMN order_history.pnl IS '收益';
+COMMENT ON COLUMN order_history.c_time_ms IS '订单创建时间（毫秒时间戳）';
+COMMENT ON COLUMN order_history.c_time IS '订单创建时间（格式化后）';
+COMMENT ON COLUMN order_history.u_time_ms IS '订单更新时间（毫秒时间戳）';
+COMMENT ON COLUMN order_history.u_time IS '订单更新时间（格式化后）';
+COMMENT ON COLUMN order_history.raw_data IS '完整原始JSON数据（存储OKX API返回的完整响应）';
+COMMENT ON COLUMN order_history.created_at IS '记录创建时间';
+COMMENT ON COLUMN order_history.updated_at IS '记录更新时间';
+
+-- ============================================
+-- 2.11 OKX仓位历史表 (position_history)
+-- 说明: 存储OKX交易所的仓位历史数据（永久保存）
+-- 主键: id（自增）
+-- 唯一约束: (pos_id, c_time)
+-- 数据来源: OKX API /api/v5/account/positions-history
+-- 更新频率: 每30秒同步一次
+-- ============================================
+CREATE TABLE IF NOT EXISTS position_history (
+    -- 主键
+    id BIGSERIAL PRIMARY KEY,                      -- 自增主键ID
+    
+    -- 基础信息
+    inst_id VARCHAR(50) NOT NULL,                  -- 产品ID（如BTC-USDT-SWAP）
+    symbol VARCHAR(20) NOT NULL,                  -- 币种名称（从instId提取，如BTC、ETH）
+    inst_type VARCHAR(20) NOT NULL,                -- 产品类型：MARGIN/SWAP/FUTURES/OPTION
+    mgn_mode VARCHAR(20) NOT NULL,                 -- 保证金模式：cross（全仓）/isolated（逐仓）
+    pos_id VARCHAR(50) NOT NULL,                   -- 仓位ID（OKX返回的posId，存在有效期，自最近一次完全平仓算起满30天会失效）
+    pos_side VARCHAR(10),                          -- 持仓模式方向：long（开平仓模式开多）/short（开平仓模式开空）/net（买卖模式）
+    direction VARCHAR(10),                          -- 持仓方向：long（多）/short（空），仅适用于杠杆/交割/永续/期权
+    lever VARCHAR(10),                              -- 杠杆倍数
+    ccy VARCHAR(10),                                -- 占用保证金的币种
+    uly VARCHAR(50),                                -- 标的指数
+    
+    -- 价格信息
+    open_avg_px DECIMAL(20, 8),                    -- 开仓均价（会随结算周期变化，特别是在交割合约全仓模式下，结算时开仓均价会更新为结算价格）
+    non_settle_avg_px DECIMAL(20, 8),              -- 未结算均价（不受结算影响的加权开仓价格，仅在新增头寸时更新，仅适用于全仓交割）
+    close_avg_px DECIMAL(20, 8),                   -- 平仓均价
+    trigger_px DECIMAL(20, 8),                      -- 触发标记价格（type为3,4,5时有值；为1,2时为空）
+    
+    -- 持仓信息
+    open_max_pos DECIMAL(20, 8),                   -- 最大持仓量
+    close_total_pos DECIMAL(20, 8),                -- 累计平仓量
+    
+    -- 收益信息
+    realized_pnl DECIMAL(20, 8),                   -- 已实现收益（仅适用于交割/永续/期权，realizedPnl = pnl + fee + fundingFee + liqPenalty + settledPnl）
+    settled_pnl DECIMAL(20, 8),                    -- 已实现收益（仅适用于全仓交割）
+    pnl DECIMAL(20, 8),                            -- 已实现收益（不包括手续费）
+    pnl_ratio DECIMAL(20, 8),                      -- 已实现收益率
+    fee DECIMAL(20, 8),                             -- 累计手续费金额（正数代表平台返佣，负数代表平台扣除）
+    funding_fee DECIMAL(20, 8),                    -- 累计资金费用
+    liq_penalty DECIMAL(20, 8),                    -- 累计爆仓罚金（有值时为负数）
+    
+    -- 平仓类型
+    type VARCHAR(10),                               -- 最近一次平仓的类型：1（部分平仓）/2（完全平仓）/3（强平）/4（强减）/5（ADL自动减仓-仓位未完全平仓）/6（ADL自动减仓-仓位完全平仓），状态叠加时以最新的平仓类型为准
+    
+    -- 扩展字段（用于关联AI决策）
+    trade_id1 VARCHAR(50),                          -- 扩展字段1：用于关联AI决策ID或其他业务ID
+    trade_id2 VARCHAR(50),                          -- 扩展字段2：用于关联AI决策ID或其他业务ID
+    
+    -- 时间字段（同时存储毫秒时间戳和格式化时间）
+    c_time_ms BIGINT NOT NULL,                      -- 仓位创建时间（毫秒时间戳）
+    c_time TIMESTAMPTZ NOT NULL,                    -- 仓位创建时间（格式化后）
+    u_time_ms BIGINT NOT NULL,                      -- 仓位更新时间（毫秒时间戳）
+    u_time TIMESTAMPTZ NOT NULL,                    -- 仓位更新时间（格式化后）
+    
+    -- 原始数据
+    raw_data JSONB,                                 -- 完整原始JSON数据（存储OKX API返回的完整响应）
+    
+    -- 系统字段
+    created_at TIMESTAMPTZ DEFAULT NOW(),          -- 记录创建时间
+    updated_at TIMESTAMPTZ DEFAULT NOW(),          -- 记录更新时间
+    
+    -- 唯一约束：(pos_id, c_time)组合唯一，同一仓位（相同pos_id和开仓时间）只有一条记录，通过type字段更新状态
+    UNIQUE (pos_id, c_time)
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_position_history_symbol ON position_history(symbol);
+CREATE INDEX IF NOT EXISTS idx_position_history_inst_id ON position_history(inst_id);
+CREATE INDEX IF NOT EXISTS idx_position_history_pos_id ON position_history(pos_id);
+CREATE INDEX IF NOT EXISTS idx_position_history_mgn_mode ON position_history(mgn_mode);
+CREATE INDEX IF NOT EXISTS idx_position_history_type ON position_history(type);
+CREATE INDEX IF NOT EXISTS idx_position_history_c_time ON position_history(c_time DESC);
+CREATE INDEX IF NOT EXISTS idx_position_history_u_time ON position_history(u_time DESC);
+CREATE INDEX IF NOT EXISTS idx_position_history_symbol_time ON position_history(symbol, u_time DESC);
+CREATE INDEX IF NOT EXISTS idx_position_history_inst_id_time ON position_history(inst_id, u_time DESC);
+CREATE INDEX IF NOT EXISTS idx_position_history_trade_id1 ON position_history(trade_id1);
+CREATE INDEX IF NOT EXISTS idx_position_history_trade_id2 ON position_history(trade_id2);
+
+-- 表注释
+COMMENT ON TABLE position_history IS 'OKX仓位历史表，存储OKX交易所的仓位历史数据（永久保存，每30秒同步一次）';
+
+-- 字段注释
+COMMENT ON COLUMN position_history.id IS '自增主键ID';
+COMMENT ON COLUMN position_history.inst_id IS '产品ID（如BTC-USDT-SWAP）';
+COMMENT ON COLUMN position_history.symbol IS '币种名称（从instId提取，如BTC、ETH）';
+COMMENT ON COLUMN position_history.inst_type IS '产品类型：MARGIN（币币杠杆）/SWAP（永续合约）/FUTURES（交割合约）/OPTION（期权）';
+COMMENT ON COLUMN position_history.mgn_mode IS '保证金模式：cross（全仓）/isolated（逐仓）';
+COMMENT ON COLUMN position_history.pos_id IS '仓位ID（OKX返回的posId，存在有效期，自最近一次完全平仓算起满30天会失效，之后的仓位会使用新的posId）';
+COMMENT ON COLUMN position_history.pos_side IS '持仓模式方向：long（开平仓模式开多）/short（开平仓模式开空）/net（买卖模式）';
+COMMENT ON COLUMN position_history.direction IS '持仓方向：long（多）/short（空），仅适用于杠杆/交割/永续/期权';
+COMMENT ON COLUMN position_history.lever IS '杠杆倍数';
+COMMENT ON COLUMN position_history.ccy IS '占用保证金的币种';
+COMMENT ON COLUMN position_history.uly IS '标的指数';
+COMMENT ON COLUMN position_history.open_avg_px IS '开仓均价（会随结算周期变化，特别是在交割合约全仓模式下，结算时开仓均价会更新为结算价格，同时新增头寸也会改变开仓均价）';
+COMMENT ON COLUMN position_history.non_settle_avg_px IS '未结算均价（不受结算影响的加权开仓价格，仅在新增头寸时更新，和开仓均价的主要区别在于是否受到结算影响，仅适用于全仓交割）';
+COMMENT ON COLUMN position_history.close_avg_px IS '平仓均价';
+COMMENT ON COLUMN position_history.trigger_px IS '触发标记价格（type为3,4,5时有值；为1,2时为空）';
+COMMENT ON COLUMN position_history.open_max_pos IS '最大持仓量';
+COMMENT ON COLUMN position_history.close_total_pos IS '累计平仓量';
+COMMENT ON COLUMN position_history.realized_pnl IS '已实现收益（仅适用于交割/永续/期权，realizedPnl = pnl + fee + fundingFee + liqPenalty + settledPnl）';
+COMMENT ON COLUMN position_history.settled_pnl IS '已实现收益（仅适用于全仓交割）';
+COMMENT ON COLUMN position_history.pnl IS '已实现收益（不包括手续费）';
+COMMENT ON COLUMN position_history.pnl_ratio IS '已实现收益率';
+COMMENT ON COLUMN position_history.fee IS '累计手续费金额（正数代表平台返佣，负数代表平台扣除）';
+COMMENT ON COLUMN position_history.funding_fee IS '累计资金费用';
+COMMENT ON COLUMN position_history.liq_penalty IS '累计爆仓罚金（有值时为负数）';
+COMMENT ON COLUMN position_history.type IS '最近一次平仓的类型：1（部分平仓）/2（完全平仓）/3（强平）/4（强减）/5（ADL自动减仓-仓位未完全平仓）/6（ADL自动减仓-仓位完全平仓），状态叠加时以最新的平仓类型为准';
+COMMENT ON COLUMN position_history.trade_id1 IS '扩展字段1：用于关联AI决策ID或其他业务ID';
+COMMENT ON COLUMN position_history.trade_id2 IS '扩展字段2：用于关联AI决策ID或其他业务ID';
+COMMENT ON COLUMN position_history.c_time_ms IS '仓位创建时间（毫秒时间戳）';
+COMMENT ON COLUMN position_history.c_time IS '仓位创建时间（格式化后）';
+COMMENT ON COLUMN position_history.u_time_ms IS '仓位更新时间（毫秒时间戳）';
+COMMENT ON COLUMN position_history.u_time IS '仓位更新时间（格式化后）';
+COMMENT ON COLUMN position_history.raw_data IS '完整原始JSON数据（存储OKX API返回的完整响应）';
+COMMENT ON COLUMN position_history.created_at IS '记录创建时间';
+COMMENT ON COLUMN position_history.updated_at IS '记录更新时间';
+
+-- ============================================
+-- 2.12 交易关联表 (trading_relations)
+-- 说明: 记录完整的交易链路：信号ID -> clOrdId -> 多个订单ID -> 持仓ID
+-- 主键: id（自增）
+-- 数据来源: 交易模块
+-- 更新频率: 每次交易操作时记录
+-- ============================================
+CREATE TABLE IF NOT EXISTS trading_relations (
+    id BIGSERIAL PRIMARY KEY,                      -- 自增主键ID
+    
+    -- 关联信息
+    signal_id BIGINT NOT NULL,                     -- 信号ID（market_signals.id）
+    cl_ord_id VARCHAR(32) NOT NULL,                 -- 客户端订单ID（唯一标识一个交易逻辑）
+    ord_id VARCHAR(50),                             -- 订单ID（OKX的ordId，一个clOrdId可能对应多个ordId）
+    position_history_id BIGINT,                      -- 仓位历史ID（position_history.id，平仓后关联）
+    
+    -- 操作信息
+    operation_type VARCHAR(20) NOT NULL,           -- 操作类型：open/add/reduce/close/set_stop_loss_take_profit
+    amount DECIMAL(20, 8),                          -- 操作数量（可为空，如设置止损止盈时）
+    price DECIMAL(20, 8),                           -- 操作价格（可为空）
+    
+    -- 系统字段
+    created_at TIMESTAMPTZ DEFAULT NOW(),          -- 记录创建时间
+    updated_at TIMESTAMPTZ DEFAULT NOW()            -- 记录更新时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_trading_relations_signal_id ON trading_relations(signal_id);
+CREATE INDEX IF NOT EXISTS idx_trading_relations_cl_ord_id ON trading_relations(cl_ord_id);
+CREATE INDEX IF NOT EXISTS idx_trading_relations_ord_id ON trading_relations(ord_id);
+CREATE INDEX IF NOT EXISTS idx_trading_relations_position_history_id ON trading_relations(position_history_id);
+CREATE INDEX IF NOT EXISTS idx_trading_relations_operation_type ON trading_relations(operation_type);
+CREATE INDEX IF NOT EXISTS idx_trading_relations_signal_cl_ord ON trading_relations(signal_id, cl_ord_id);
+
+-- 表注释
+COMMENT ON TABLE trading_relations IS '交易关联表，记录完整的交易链路：信号ID -> clOrdId -> 多个订单ID -> 持仓ID';
+
+-- 字段注释
+COMMENT ON COLUMN trading_relations.id IS '自增主键ID';
+COMMENT ON COLUMN trading_relations.signal_id IS '信号ID（market_signals.id）';
+COMMENT ON COLUMN trading_relations.cl_ord_id IS '客户端订单ID（唯一标识一个交易逻辑，一个clOrdId可能对应多个ordId）';
+COMMENT ON COLUMN trading_relations.ord_id IS '订单ID（OKX的ordId，一个clOrdId可能对应多个ordId，所以需要多行记录）';
+COMMENT ON COLUMN trading_relations.position_history_id IS '仓位历史ID（position_history.id，平仓后关联，可为空）';
+COMMENT ON COLUMN trading_relations.operation_type IS '操作类型：open（开仓）/add（加仓）/reduce（减仓）/close（平仓）/set_stop_loss_take_profit（设置止损止盈）';
+COMMENT ON COLUMN trading_relations.amount IS '操作数量（可为空，如设置止损止盈时）';
+COMMENT ON COLUMN trading_relations.price IS '操作价格（可为空）';
+COMMENT ON COLUMN trading_relations.created_at IS '记录创建时间';
+COMMENT ON COLUMN trading_relations.updated_at IS '记录更新时间';
+
+-- ============================================
+-- 2.13 挂单表 (pending_orders)
+-- 说明: 存储待触发的挂单，价格达到触发条件时自动开仓
+-- 主键: id（自增）
+-- 数据来源: 挂单管理器
+-- 更新频率: 实时监控价格，触发时更新
+-- ============================================
+CREATE TABLE IF NOT EXISTS pending_orders (
+    id BIGSERIAL PRIMARY KEY,                      -- 自增主键ID
+    
+    -- 挂单基本信息
+    symbol VARCHAR(20) NOT NULL,                  -- 币种名称（如BTC、ETH）
+    side VARCHAR(10) NOT NULL,                    -- 持仓方向：LONG/SHORT
+    amount DECIMAL(20, 8) NOT NULL,                -- 开仓数量（币数量）
+    trigger_price DECIMAL(20, 8) NOT NULL,         -- 开仓触发价格（LONG: <=触发，SHORT: >=触发）
+    stop_loss_trigger DECIMAL(20, 8) NOT NULL,     -- 止损触发价格
+    take_profit_trigger DECIMAL(20, 8) NOT NULL,   -- 止盈触发价格
+    leverage DECIMAL(10, 2) NOT NULL,              -- 杠杆倍数
+    signal_id BIGINT,                              -- 信号ID（market_signals.id，可选）
+    
+    -- 状态和时间
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- 状态：PENDING/EXPIRED/FILLED/FAILED/CANCELLED
+    created_at TIMESTAMPTZ DEFAULT NOW(),           -- 创建时间
+    expired_at TIMESTAMPTZ NOT NULL,               -- 过期时间（created_at + 过期时长）
+    triggered_at TIMESTAMPTZ,                      -- 触发时间（可选）
+    filled_at TIMESTAMPTZ,                         -- 完成时间（可选）
+    error_message TEXT,                            -- 失败原因（可选）
+    
+    -- 关联信息
+    cl_ord_id VARCHAR(32),                        -- 开仓成功后的clOrdId（可选）
+    
+    updated_at TIMESTAMPTZ DEFAULT NOW()            -- 更新时间
+);
+
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_pending_orders_symbol ON pending_orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_status ON pending_orders(status);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_created_at ON pending_orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_expired_at ON pending_orders(expired_at);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_status_expired ON pending_orders(status, expired_at);
+CREATE INDEX IF NOT EXISTS idx_pending_orders_signal_id ON pending_orders(signal_id);
+
+-- 表注释
+COMMENT ON TABLE pending_orders IS '挂单表，存储待触发的挂单，价格达到触发条件时自动开仓';
+
+-- 字段注释
+COMMENT ON COLUMN pending_orders.id IS '自增主键ID';
+COMMENT ON COLUMN pending_orders.symbol IS '币种名称（如BTC、ETH）';
+COMMENT ON COLUMN pending_orders.side IS '持仓方向：LONG（做多）/SHORT（做空）';
+COMMENT ON COLUMN pending_orders.amount IS '开仓数量（币数量）';
+COMMENT ON COLUMN pending_orders.trigger_price IS '开仓触发价格（LONG: 当前价格<=trigger_price时触发，SHORT: 当前价格>=trigger_price时触发）';
+COMMENT ON COLUMN pending_orders.stop_loss_trigger IS '止损触发价格';
+COMMENT ON COLUMN pending_orders.take_profit_trigger IS '止盈触发价格';
+COMMENT ON COLUMN pending_orders.leverage IS '杠杆倍数';
+COMMENT ON COLUMN pending_orders.signal_id IS '信号ID（market_signals.id，可选）';
+COMMENT ON COLUMN pending_orders.status IS '状态：PENDING（待处理）/EXPIRED（已过期）/FILLED（已完成）/FAILED（失败）/CANCELLED（取消）';
+COMMENT ON COLUMN pending_orders.created_at IS '创建时间';
+COMMENT ON COLUMN pending_orders.expired_at IS '过期时间（created_at + 过期时长，默认1小时）';
+COMMENT ON COLUMN pending_orders.triggered_at IS '触发时间（价格达到触发条件的时间）';
+COMMENT ON COLUMN pending_orders.filled_at IS '完成时间（开仓成功的时间）';
+COMMENT ON COLUMN pending_orders.error_message IS '失败原因（开仓失败时的错误信息）';
+COMMENT ON COLUMN pending_orders.cl_ord_id IS '开仓成功后的clOrdId（如果开仓成功）';
+COMMENT ON COLUMN pending_orders.updated_at IS '更新时间';
+
+-- ============================================
 -- 三、系统配置表
 -- 说明: 存储所有系统配置项，替代config.py中的硬编码配置
 -- ============================================
@@ -522,9 +1074,9 @@ INSERT INTO system_config (config_key, value, value_type, description) VALUES
 
 -- 交易所配置（用于数据同步）
 ('EXCHANGE_NAME', 'okx', 'string', '交易所名称'),
-('EXCHANGE_API_KEY', '', 'string', 'OKX API密钥（可选，如果不需要交易功能可以不填）'),
-('EXCHANGE_SECRET', '', 'string', 'OKX API密钥对应的Secret（可选）'),
-('EXCHANGE_PASSPHRASE', '', 'string', 'OKX API密钥对应的Passphrase（可选）'),
+('EXCHANGE_API_KEY', '3216e9b4-c8cb-4670-afcd-d6d23d719461', 'string', 'OKX API密钥'),
+('EXCHANGE_SECRET', '5AD7D2564E2015D6ED56D2E93FBEAA71', 'string', 'OKX API密钥对应的Secret'),
+('EXCHANGE_PASSPHRASE', 'damaoxian.1A', 'string', 'OKX API密钥对应的Passphrase'),
 ('EXCHANGE_SANDBOX', 'true', 'boolean', '是否使用交易所沙箱环境'),
 
 -- CoinGlass API配置
@@ -534,6 +1086,9 @@ INSERT INTO system_config (config_key, value, value_type, description) VALUES
 -- 交易币种配置（用于数据同步）
 ('SYMBOL', 'ETH/USDT:USDT', 'string', '默认交易币种（CCXT格式）'),
 ('TRADING_SYMBOLS', 'ETH', 'string', '交易币种列表（逗号分隔），系统会为每个币种创建独立的同步线程'),
+
+-- 交易限制配置
+('MAX_LEVERAGE', '3', 'int', '最大杠杆倍数限制，开仓时如果杠杆超过此值将被拒绝'),
 
 -- 技术指标配置
 ('RSI_15M_PERIOD', '7', 'int', '15分钟K线RSI计算周期'),
@@ -585,12 +1140,47 @@ INSERT INTO system_config (config_key, value, value_type, description) VALUES
 ('WS_PRICE_TIMEOUT', '30', 'int', 'WebSocket价格超时时间（秒）'),
 ('WS_QUEUE_MAXSIZE', '100', 'int', 'WebSocket价格队列最大长度'),
 ('WS_SSL_VERIFY', 'true', 'boolean', '是否验证SSL证书'),
+('WS_SSL_CERT_PATH', '', 'string', 'SSL证书文件路径（可选），如果为空则使用certifi证书包'),
 
 -- 日志配置
 ('LOG_LEVEL', 'INFO', 'string', '日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL'),
 ('LOG_FILE', 'logs/qwentradeai.log', 'string', '日志文件路径'),
 ('LOG_MAX_BYTES', '10485760', 'int', '单个日志文件最大大小（字节），默认10MB'),
-('LOG_BACKUP_COUNT', '5', 'int', '日志文件备份数量')
+('LOG_BACKUP_COUNT', '5', 'int', '日志文件备份数量'),
+
+-- 市场检测器配置
+-- 环境层参数
+('DETECTOR_EMA_TREND_PERIOD', '55', 'int', '市场检测器：用于趋势判断的EMA周期（环境层）'),
+('DETECTOR_BB_WIDTH_THRESHOLD', '0.5', 'float', '市场检测器：布林带宽度阈值（相对于20根平均值的倍数，低于此值认为市场不活跃）'),
+
+-- 触发层参数
+('DETECTOR_RSI_LONG_THRESHOLD', '80.0', 'float', '市场检测器：做多信号RSI上限（RSI低于此值才允许做多，防止极端过热）'),
+('DETECTOR_RSI_SHORT_THRESHOLD', '20.0', 'float', '市场检测器：做空信号RSI下限（RSI高于此值才允许做空，防止极端超卖）'),
+('DETECTOR_RSI_DOUBLE_POSITION_LONG', '50.0', 'float', '市场检测器：做多时RSI低于此值加倍仓位（更好的盈亏比）'),
+('DETECTOR_RSI_DOUBLE_POSITION_SHORT', '50.0', 'float', '市场检测器：做空时RSI高于此值加倍仓位（更好的盈亏比）'),
+
+-- 确认层参数
+('DETECTOR_VOLUME_STD_MULTIPLIER', '1.5', 'float', '市场检测器：成交量确认阈值（平均值 + 此倍数 × 标准差，降低此值可增加信号数量）'),
+('DETECTOR_BB_CONFIRM_THRESHOLD', '1.2', 'float', '市场检测器：布林带确认阈值（当前宽度必须 > 平均宽度的此倍数才认为确认）'),
+
+-- 数据量参数
+('DETECTOR_KLINE_15M_COUNT', '100', 'int', '市场检测器：使用的15分钟K线数量'),
+('DETECTOR_KLINE_4H_COUNT', '60', 'int', '市场检测器：使用的4小时K线数量'),
+
+-- 其他参数
+('DETECTOR_ENABLE_MULTI_TF', 'true', 'boolean', '市场检测器：是否启用多时间框架确认（15m和4h共振加分）'),
+('DETECTOR_SIGNAL_EXPIRE_HOURS', '4', 'int', '市场检测器：信号有效期（小时，超过此时间信号自动过期）'),
+
+-- OKX订单历史同步配置
+('OKX_ORDER_HISTORY_SYMBOLS', 'ETH', 'string', 'OKX订单历史同步币种列表（逗号分隔），只同步永续合约（SWAP）'),
+('OKX_ORDER_HISTORY_START_TIME', '1765900800000', 'string', 'OKX订单历史同步开始时间（毫秒时间戳），为空则从当前时间往前推30天开始'),
+
+-- OKX仓位历史同步配置
+('OKX_POSITION_HISTORY_SYMBOLS', 'ETH', 'string', 'OKX仓位历史同步币种列表（逗号分隔），只同步永续合约（SWAP）'),
+('OKX_POSITION_HISTORY_START_TIME', '1765900800000', 'string', 'OKX仓位历史同步开始时间（毫秒时间戳），为空则从当前时间往前推30天开始'),
+
+-- 挂单配置
+('PENDING_ORDER_EXPIRE_HOURS', '1.0', 'float', '挂单过期时长（小时），默认1小时')
 
 ON CONFLICT (config_key) DO UPDATE SET
     value = EXCLUDED.value,
@@ -749,15 +1339,20 @@ SELECT add_retention_policy('fear_greed_index'::regclass, INTERVAL '730 days', i
 --    - klines_4h（4小时K线，保留365天）
 --    - klines_1d（日线K线，保留730天）
 -- 
--- 2. 市场数据表（6个）：
+-- 2. 市场数据表（7个）：
 --    - funding_rate_history（资金费率历史，保留365天）
 --    - open_interest_15m（未平仓合约15分钟，保留180天）
 --    - market_sentiment_data（市场情绪数据，保留365天）
 --    - order_book_distribution（盘口挂单分布，保留90天）
 --    - etf_flow_data（ETF资金流，保留730天）
 --    - fear_greed_index（恐惧贪婪指数，保留730天）
+--    - order_history（OKX历史订单，永久保存）
 -- 
--- 3. 系统配置表（1个）：
+-- 3. 市场检测表（2个）：
+--    - market_detection_snapshots（市场检测快照，保留180天）
+--    - market_signals（市场信号，保留365天）
+-- 
+-- 4. 系统配置表（1个）：
 --    - system_config（系统配置，永久保留）
 -- 
 -- 注意事项：

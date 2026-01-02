@@ -1,0 +1,1834 @@
+# AI 多智能体交易分析系统设计文档 v4
+
+## 一、系统概述
+
+本系统采用多智能体协作架构，通过市场信号检测器触发后，由4个专业AI分析师并行分析，最终由首席交易官综合决策。同时配备独立的持仓管理AI，负责动态调整仓位。
+
+### 核心架构
+
+```
+市场信号检测器
+       ↓ (信号触发)
+   ┌───┴───┐
+   ↓       ↓
+┌─────────────────────────────────────┐
+│         并行分析层 (qwen3-max)        │
+├───────────┬───────────┬─────────────┤
+│ 技术分析师 │ 情绪分析师 │   风控官    │
+└─────┬─────┴─────┬─────┴──────┬──────┘
+      └───────────┼────────────┘
+                  ↓
+      ┌───────────────────────┐
+      │ 首席交易官 (Claude-Sonnet) │
+      │     综合决策 & 开仓建议    │
+      └───────────────────────┘
+
+┌─────────────────────────────────────┐
+│   持仓管理AI (Claude-Sonnet)         │
+│   独立运行，监控并调整现有持仓        │
+└─────────────────────────────────────┘
+```
+
+### 数据处理原则
+
+**精简数据格式**：所有输入给AI的数据采用「关键数值 + 状态标签」的精简格式，删除判断基准表（AI已知这些标准）和历史对比数据（给简单标签即可）。
+
+---
+
+## 二、智能体详细设计
+
+### 2.1 技术分析师 (Technical Analyst)
+
+**模型**: qwen3-max
+
+**职责**: 基于多周期K线和技术指标进行市场结构分析
+
+**预处理后的输入格式**:
+
+```
+## 技术分析数据摘要
+生成时间: 2024-01-15 10:30:00 UTC
+交易对: BTCUSDT
+当前价格: 42,850 USDT
+
+---
+
+### 一、多周期趋势总览
+
+| 周期 | 趋势方向 | EMA排列 | 价格位置 | MACD | RSI |
+|------|----------|---------|----------|------|-----|
+| 15分钟 | 📈 上涨 | 多头(9>21>55) | EMA9上方 | 金叉，柱状图扩张 | 62.5 |
+| 4小时 | 📈 上涨 | 多头(9>21) | EMA9上方 | 金叉，柱状图扩张 | 58.5 |
+| 日线 | 📈 上涨 | 多头(9>21) | EMA9上方 | - | - |
+
+**多周期共振**: ✅ 三周期同向看涨
+
+---
+
+### 二、15分钟级别详情
+
+#### EMA系统
+- EMA9: 42,820 | EMA21: 42,650 | EMA55: 42,380
+- 排列: ✅ 多头排列
+
+#### 动能指标
+- RSI(7): 62.5 (中性偏强)
+- MACD: 金叉，柱状图 +27.3 (扩张中)
+- ADX(14): 25.5 (有效趋势)
+
+#### 波动性
+- 布林带: 上轨 43,450 | 中轨 42,680 | 下轨 41,910
+- 价格位置: 中轨与上轨之间
+- ATR(14): 385 USDT (0.90%，正常)
+
+#### 量价
+- OBV: 上升，量价配合 ✅
+
+---
+
+### 三、4小时级别详情
+
+#### EMA系统
+- EMA9: 42,580 | EMA21: 42,150
+- 排列: ✅ 多头排列
+
+#### 动能指标
+- RSI(14): 58.5 (健康)
+- MACD: 金叉，柱状图 +186 (扩张中)
+
+#### 布林带
+- 上轨: 44,200 | 中轨: 42,450 | 下轨: 40,700
+
+#### OBV
+- 趋势: 上升 ✅
+
+---
+
+### 四、日线级别详情
+
+- EMA9: 42,100 | EMA21: 41,200
+- 排列: ✅ 多头排列
+- 价格位置: EMA9上方 +1.78%
+
+---
+
+### 五、关键价位
+
+#### 支撑位
+| 价位 | 类型 |
+|------|------|
+| 42,650 | 15m EMA21 |
+| 42,150 | 4h EMA21 |
+| 41,200 | 日线EMA21 |
+
+#### 阻力位
+| 价位 | 类型 |
+|------|------|
+| 43,450 | 15m BB上轨 |
+| 44,200 | 4h BB上轨 |
+| 45,000 | 前高 |
+
+---
+
+请基于以上数据进行技术分析。
+```
+4. 关键失效价位（跌破则看法失效）？
+```
+
+**输出结构**:
+```json
+{
+  "analyst": "technical",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "symbol": "BTCUSDT",
+  "current_price": 42850,
+  "trend_assessment": {
+    "timeframe_scores": {
+      "daily": 50,
+      "h4": 30,
+      "m15": 20,
+      "total": 100
+    },
+    "primary_trend": "bullish",
+    "trend_strength": "strong"
+  },
+  "momentum": {
+    "rsi_status": "healthy",
+    "macd_status": "bullish_expanding",
+    "divergence": "none"
+  },
+  "volatility": {
+    "regime": "normal",
+    "atr_percent": 0.90
+  },
+  "volume": {
+    "obv_trend": "rising",
+    "price_volume_confirmation": true
+  },
+  "key_levels": {
+    "supports": [42650, 42150],
+    "resistances": [43450, 44200],
+    "invalidation": 42150
+  },
+  "recommendation": {
+    "direction": "long",
+    "confidence": 0.80,
+    "entry_zone": [42700, 42900],
+    "invalidation_price": 42150,
+    "reasoning": "日线多头(+50)+4小时金叉(+30)+15分钟企稳(+20)=总分100，强烈看多。建议在42700-42900区间做多，跌破42150则看法失效。"
+  }
+}
+```
+
+**Prompt模板**:
+```
+## 角色设定
+
+你是一位拥有10年加密货币交易经验的资深技术分析师，专注于多周期趋势分析。
+
+### 你的分析框架
+- **日线(1D)**: 看大方向，确定主趋势是多还是空（权重: 50%）
+- **4小时(4H)**: 看结构，找趋势中的回调/反弹位置（权重: 30%）
+- **15分钟(15M)**: 找精确入场点，优化风险回报比（权重: 20%）
+
+### 多周期权重打分
+不要求三周期"全票通过"，使用加权打分：
+- 日线看多 +50分，看空 -50分，震荡 0分
+- 4小时看多 +30分，看空 -30分，震荡 0分
+- 15分钟看多 +20分，看空 -20分，震荡 0分
+- 总分 > +50：可以做多
+- 总分 < -50：可以做空
+- -50 ~ +50：观望或轻仓
+
+**示例**：日线多(+50) + 4小时多(+30) + 15分钟震荡(0) = +80分 → 可以做多
+
+### 你的专业背景
+- 精通道氏理论、威科夫方法，理解市场结构
+- 擅长EMA均线系统（9/21/55），用均线排列判断趋势
+- 重视MACD动能变化，金叉死叉是重要的结构信号
+- 用ADX确认趋势有效性，用RSI判断超买超卖
+- 相信量价配合，OBV是验证趋势的重要工具
+
+### 你的分析原则
+- **顺势交易**: 不逆着日线趋势做单
+- **权重共振**: 使用加权打分，不要求全部共振
+- **结构优先**: 4小时级别的MACD金叉/死叉是关键结构信号
+- **精确入场**: 用15分钟找好的入场点位，提高风险回报比
+- **趋势确认**: ADX>25才认为趋势有效，否则是震荡市
+
+---
+
+## 分析数据
+
+{technical_data_summary}
+
+---
+
+## 分析任务
+
+请基于以上数据，完成多周期技术分析：
+
+### 1. 日线级别（定方向，权重50%）
+- 当前处于什么趋势？上涨/下跌/震荡？
+- EMA排列是多头还是空头？
+- 日线得分：+50 / 0 / -50
+
+### 2. 4小时级别（找结构，权重30%）
+- MACD是金叉还是死叉？柱状图扩张还是收缩？
+- 当前是趋势延续、回调、还是反转？
+- 4小时得分：+30 / 0 / -30
+
+### 3. 15分钟级别（找入场，权重20%）
+- 短期趋势与4小时是否共振？
+- RSI状态如何？是否超买超卖？
+- 15分钟得分：+20 / 0 / -20
+
+### 4. 综合打分
+- 总分 = 日线得分 + 4小时得分 + 15分钟得分
+- 根据总分判断方向和置信度
+
+### 5. 交易建议
+- 方向：long / short / neutral
+- 置信度：基于总分计算（如+80分→0.8置信度）
+- 入场区间
+- 失效价位
+
+---
+
+## 输出要求
+
+请以JSON格式输出，包含以下字段：
+- trend_assessment: 趋势评估（包含 timeframe_scores: {daily, h4, m15, total}）
+- momentum: 动能状态（rsi_status, macd_status, divergence）
+- volatility: 波动性（regime, atr_percent）
+- volume: 量能（obv_trend, price_volume_confirmation）
+- key_levels: 关键价位（supports, resistances, invalidation）
+- recommendation: 建议（direction, confidence, entry_zone, invalidation_price, reasoning）
+
+reasoning中要体现多周期分析的逻辑：日线定方向 → 4小时找结构 → 15分钟找入场。
+```
+
+---
+
+### 2.2 情绪分析师 (Sentiment Analyst)
+
+**模型**: qwen3-max
+
+**职责**: 分析市场情绪、资金流向、仓位分布
+
+**预处理后的输入格式**:
+
+```
+## 市场情绪数据摘要
+生成时间: 2024-01-15 10:30:00 UTC
+交易对: BTCUSDT
+
+---
+
+### 一、恐惧贪婪指数
+
+- 当前值: 72 (贪婪)
+- 昨日: 68
+- 趋势: 📈 情绪升温中
+- 距离极端: 还差8点到极度贪婪区(80)
+- ⏱️ 数据延迟: 实时 | 权重: 高
+
+---
+
+### 二、资金费率
+
+- 当前: 0.0125% (偏高)
+- 趋势: 📈 连续5期上升
+- 年化成本: 45.6%
+- 状态: ⚠️ 多头略拥挤
+- ⏱️ 数据延迟: 实时 | 权重: 高
+
+---
+
+### 三、持仓量 (Open Interest)
+
+- 当前OI: 125亿美元
+- 24h变化: +5.2%
+- 价格24h变化: +2.1%
+- 解读: ✅ 价涨+OI涨 = 新多入场
+- ⏱️ 数据延迟: 实时 | 权重: 高
+
+---
+
+### 四、多空比
+
+- 当前: 1.35 (偏多)
+- 多头占比: 57.5%
+- 空头占比: 42.5%
+- 趋势: 📈 多头比例增加中
+- ⏱️ 数据延迟: 实时 | 权重: 中（散户指标，常为反向）
+
+---
+
+### 五、ETF资金流 (BTC)
+
+- 昨日净流: +1.25亿美元 (T+1数据)
+- 连续流入: 5天
+- 本周累计: +5.8亿美元
+- 状态: ✅ 机构持续买入
+- ⏱️ 数据延迟: T+1 | 权重: 中（延迟数据，参考趋势而非当日）
+
+---
+
+### 六、大单动向
+
+- 大单买卖比: 1.18 (买盘占优)
+- 状态: 📈 偏向买入
+- ⏱️ 数据延迟: 实时 | 权重: 中
+
+---
+
+**数据权重说明**：
+- 高权重（实时）: 恐贪指数、资金费率、OI
+- 中权重（有延迟或可靠性一般）: ETF资金流(T+1)、多空比、大单
+
+请基于以上数据进行情绪面分析，注意数据延迟对判断的影响。
+```
+
+#### 最近5日明细
+| 日期 | 净流 | 类型 |
+|------|------|------|
+| 01-15 | +1.25亿 | 流入 |
+请基于以上数据进行情绪面分析。
+```
+
+**输出结构**:
+```json
+{
+  "analyst": "sentiment",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "symbol": "BTCUSDT",
+  
+  "overall_sentiment": {
+    "status": "bullish",
+    "intensity": "moderate",
+    "extreme_signal": false
+  },
+  
+  "indicators": {
+    "fear_greed": 72,
+    "funding_rate": 0.0125,
+    "oi_change_24h": 5.2,
+    "long_short_ratio": 1.35,
+    "etf_flow_today": 125000000
+  },
+  
+  "contrarian_alerts": [],
+  
+  "recommendation": {
+    "direction": "bullish",
+    "confidence": 0.70,
+    "supporting": ["ETF连续5日净流入", "OI增加配合价格上涨"],
+    "risks": ["资金费率偏高", "恐贪指数接近过热区"],
+    "reasoning": "情绪面整体偏多但未达极端。ETF持续流入是最强支撑信号，但需警惕资金费率偏高。"
+  }
+}
+```
+
+**Prompt模板**:
+```
+## 角色设定
+
+你是一位专注于加密货币市场的资深情绪分析师，在对冲基金工作了8年。
+
+你的专业背景：
+- 深谙市场心理学，理解"市场先生"的情绪波动规律
+- 精通资金流向分析，能从资金费率、OI变化中读出主力意图
+- 对散户行为有深刻洞察，知道什么时候散户会成为"反向指标"
+- 长期跟踪机构动向，ETF资金流是你判断机构态度的重要依据
+- 信奉"在别人恐惧时贪婪，在别人贪婪时恐惧"的逆向思维
+
+你的分析原则：
+- 情绪指标是领先指标，往往比价格更早反映转折
+- 极端情绪是最可靠的逆向信号，但"极端"有明确的量化标准
+- 资金费率反映的是杠杆交易者的成本和情绪
+- 散户多空比经常是反向指标，当散户一致看多时要警惕
+- ETF资金流代表机构态度，机构的钱是"聪明钱"
+- 爆仓数据反映市场的杠杆清洗程度
+
+你的判断标准：
+- 恐贪指数>80或<20才算极端
+- 资金费率>0.03%或<-0.03%才算极端
+- 多空比>2.0或<0.7才考虑逆向
+- ETF连续3天以上同向流动才算趋势确认
+
+---
+
+## 分析数据
+
+{sentiment_data_summary}
+
+---
+
+## 分析任务
+
+请基于以上数据，完成情绪面分析：
+
+1. **整体情绪**: 当前市场处于什么情绪状态？是恐惧、中性还是贪婪？
+2. **资金动向**: 资金费率和OI变化说明了什么？
+3. **机构态度**: ETF资金流反映机构在做什么？
+4. **散户仓位**: 散户的仓位分布是否构成反向信号？
+5. **逆向信号**: 是否有任何指标触发了极端值，需要逆向思考？
+6. **风险因素**: 当前情绪面有哪些需要警惕的风险？
+
+---
+
+## 输出要求
+
+请以JSON格式输出，包含以下字段：
+- overall_sentiment: 整体情绪（status、intensity、extreme_signal）
+- indicators: 各指标数值（fear_greed、funding_rate、oi_change_24h、long_short_ratio、etf_flow_today）
+- contrarian_alerts: 逆向信号列表（如有极端信号则填入，否则为空数组）
+- recommendation: 建议（direction、confidence、supporting、risks、reasoning）
+```
+
+---
+
+### 2.3 风控官 (Risk Manager)
+
+**模型**: qwen3-max
+
+**职责**: 评估风险敞口、市场波动性、仓位建议
+
+**预处理后的输入格式**:
+
+```
+## 风险评估数据摘要
+生成时间: 2024-01-15 10:30:00 UTC
+交易对: BTCUSDT
+当前价格: 42,850 USDT
+
+---
+
+### 一、波动性
+
+- ATR(14): 385 USDT (0.90%)
+- 状态: 正常
+- 布林带宽: 3.6%
+
+---
+
+### 二、流动性
+
+- 总盘口深度: 1,000万 USDT
+- 买卖比: 1.08
+- 状态: ✅ 优秀
+
+---
+
+### 三、杠杆风险
+
+- OI: 125亿美元，24h +5.2%
+- 资金费率: 0.0125% (偏高)
+- 24h总爆仓: 7,300万 (中等)
+- 状态: ⚠️ 中等风险
+
+---
+
+### 四、账户信息
+
+- 可用余额: 10,000 USDT
+- 单笔最大风险: 2% = 200 USDT
+- ATR止损参考: 1.5x ATR = 1.35%
+
+---
+
+### 五、最近7天交易记录
+
+| 时间 | 方向 | 杠杆 | 仓位收益 | 手续费 | 资金费率 | 最终盈亏 | 结果 |
+|------|------|------|----------|--------|----------|----------|------|
+| 01-14 18:30 | Long | 3x | +85.2 | -4.2 | -6.5 | +74.5 | 盈利 |
+| 01-14 02:15 | Long | 2x | +42.8 | -2.8 | -3.2 | +36.8 | 盈利 |
+| 01-13 14:20 | Short | 3x | -38.5 | -3.5 | +2.1 | -39.9 | 亏损 |
+| 01-12 22:45 | Long | 3x | +126.3 | -5.2 | -12.8 | +108.3 | 盈利 |
+| 01-12 08:10 | Long | 2x | +28.6 | -2.1 | -1.5 | +25.0 | 盈利 |
+| 01-11 16:30 | Long | 2x | -52.4 | -2.8 | -4.2 | -59.4 | 亏损 |
+| 01-10 10:00 | Short | 2x | +35.2 | -2.4 | +1.8 | +34.6 | 盈利 |
+
+**7天统计**:
+- 交易次数: 7笔
+- 胜率: 71% (5盈2亏)
+- 总盈亏: +179.9 USDT
+- 总手续费: -23.0 USDT
+- 总资金费率: -24.3 USDT
+- 净收益: +132.6 USDT
+
+---
+
+请进行风险评估，给出仓位和止损建议。
+```
+
+**输出结构**:
+```json
+{
+  "analyst": "risk",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "symbol": "BTCUSDT",
+  "current_price": 42850,
+  
+  "assessment": {
+    "risk_score": 0.35,
+    "risk_level": "moderate",
+    "position_allowed": true,
+    "volatility": "normal",
+    "liquidity": "excellent"
+  },
+  
+  "sizing": {
+    "leverage": 2,
+    "position_pct": 5,
+    "stop_loss_price": 42271,
+    "stop_loss_pct": 1.35
+  },
+  
+  "warnings": [
+    "资金费率偏高，控制持仓时间",
+    "OI上升，注意杠杆风险"
+  ],
+  
+  "reasoning": "风险评分0.35可接受。波动率正常，流动性优秀。建议2倍杠杆、5%仓位，止损1.35%。"
+}
+```
+
+**Prompt模板**:
+```
+## 角色设定
+
+你是一位在顶级量化对冲基金担任首席风控官超过12年的资深风险管理专家。
+
+你的专业背景：
+- 经历过2008年金融危机、2020年312暴跌、2022年LUNA崩盘等多次极端行情
+- 深刻理解"活下来比赚钱更重要"的道理
+- 精通VaR、CVaR等风险量化模型，但更相信实战经验
+- 对杠杆有天然的警惕，见过太多因为杠杆过高而爆仓的案例
+- 信奉凯利公式，但实际使用时会更保守
+
+你的风控理念：
+- 保护本金是第一优先级，没有本金就没有未来
+- 单笔交易风险永远不超过账户的2%，这是铁律
+- 止损不是失败，而是保护——"截断亏损，让利润奔跑"
+- 高波动环境下必须降低杠杆，低波动时也不要贪心加杠杆
+- 流动性是隐形杀手，很多人死在"卖不出去"上
+- 资金费率是真实成本，持仓时间越长成本越高
+
+你的审批标准：
+- 综合风险评分 > 0.7 → 直接否决，不允许开仓
+- 综合风险评分 0.5-0.7 → 降低仓位和杠杆
+- 综合风险评分 < 0.5 → 正常审批
+- 无论如何，杠杆不超过5倍，仓位不超过10%
+
+你的口头禅：
+- "能活到明天比今天赚多少更重要"
+- "我见过太多一夜暴富然后一夜归零的人"
+- "止损单是你最好的朋友"
+
+---
+
+## 分析数据
+
+{risk_data_summary}
+
+---
+
+## 评估任务
+
+请基于以上数据，完成风险评估：
+
+1. **波动性评估**: 当前波动率水平如何？是否适合交易？
+2. **流动性评估**: 盘口深度如何？大单会有滑点问题吗？
+3. **杠杆风险**: 市场整体杠杆水平如何？爆仓风险大吗？
+4. **仓位建议**: 基于风险计算，建议的杠杆和仓位是多少？
+5. **止损设置**: 基于ATR，合理的止损位在哪里？
+6. **最终裁决**: 是否允许开仓？有什么特别警示？
+
+---
+
+## 输出要求
+
+请以JSON格式输出，包含以下字段：
+- risk_assessment: 风险评估（overall_score、risk_level、position_allowed）
+- volatility: 波动性评估
+- liquidity: 流动性评估
+- leverage_risk: 杠杆风险
+- position_sizing: 仓位建议
+- stop_loss: 止损建议
+- warnings: 警告列表
+- recommendation: 最终建议（必须包含position_allowed、suggested_leverage、suggested_position_pct、suggested_stop_loss、reasoning）
+
+如果风险过高，position_allowed必须为false，并在reasoning中解释原因。
+```
+
+---
+
+### 2.4 首席交易官 (Chief Trading Officer)
+
+**模型**: Claude-Sonnet-4.5
+
+**职责**: 综合各分析师意见，以第一人称视角做出最终开仓决策
+
+**输入格式**:
+
+```
+## 首席交易官决策会议
+
+时间: 2024-01-15 10:30:00 UTC
+交易对: BTCUSDT
+当前价格: 42,850 USDT
+
+---
+
+### 技术分析师报告
+
+{technical_report_json}
+
+---
+
+### 情绪分析师报告
+
+{sentiment_report_json}
+
+---
+
+### 风控官报告
+
+{risk_report_json}
+
+---
+
+### 账户状态
+
+- 可用余额: 10,000 USDT
+
+---
+
+### 交易成本
+
+- 手续费率: 0.04% (Maker) / 0.06% (Taker)
+- 当前资金费率: 0.0125% (每8小时)
+- 预估开仓手续费: 约 0.06% × 持仓价值
+- 资金费率年化: 45.6%
+
+**成本提醒**：
+- 做多需支付资金费率（当前偏高）
+- 持仓24小时资金费率成本约: 0.0375%
+- 持仓48小时资金费率成本约: 0.075%
+
+---
+
+请做出你的交易决策，需考虑交易成本对盈利的影响。
+```
+
+**输出结构**:
+```json
+{
+  "analyst": "cto",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "symbol": "BTCUSDT",
+  "current_price": 42850,
+  
+  "analysis": {
+    "market_structure": "日线级别处于上升趋势中，4小时刚完成回调并出现MACD金叉，15分钟形成更高的低点确认短期企稳。三个周期共振向上，这是我最喜欢的入场形态。",
+    "sentiment_overview": "恐贪指数72偏贪婪但未极端，ETF连续5日净流入说明机构在买，资金费率0.0125%偏高但可接受。情绪面支持做多，但需警惕过热风险。",
+    "risk_assessment": "风控评分0.35可接受，波动率正常，流动性优秀。风控官建议2倍杠杆、5%仓位，我认可这个保守配置。",
+    "core_logic": "这是一笔顺势交易：日线定方向(多)，4小时找结构(金叉确认)，15分钟找入场(回调企稳)。三周期共振+机构资金流入+风险可控，值得一试。"
+  },
+  
+  "decision": {
+    "action": "open_long",
+    "reasoning": "三周期EMA共振向上是强信号，4小时MACD刚金叉说明动能转强，15分钟回调到EMA21获得支撑。技术面、情绪面、风控都偏多，没有明显的反对理由。虽然恐贪指数偏高，但ETF持续流入说明机构还在买，跟着聪明钱走。"
+  },
+  
+  "execution": {
+    "entry": {
+      "price": 42800,
+      "type": "limit",
+      "reason": "在15分钟EMA21附近挂单，不追高"
+    },
+    "position": {
+      "leverage": 2,
+      "size_percent": 5,
+      "reason": "情绪面有隐忧，采用保守仓位"
+    }
+  },
+  
+  "plans": [
+    {"take_profit": 43450, "amount": 30, "reason": "15分钟BB上轨，第一目标"},
+    {"take_profit": 44200, "amount": 40, "reason": "4小时BB上轨，主要目标"},
+    {"take_profit": 45000, "amount": 30, "reason": "前高，博取更大收益"},
+    {"stop_loss": 42271, "amount": 100, "reason": "1.5倍ATR，跌破则趋势破坏"}
+  ],
+  
+  "plans_reasoning": "止盈分三档(30%/40%/30%)对应15分钟、4小时、日线级别的阻力位，让利润分批落袋。止损设在1.5倍ATR位置，跌破说明15分钟的上涨结构被破坏。风险回报比约2.4:1，符合标准。",
+  
+  "time_frame": {
+    "expected_duration": "12-48小时",
+    "logic": "这是4小时级别的交易，一个4小时周期完整走完需要1-2天。资金费率偏高，不宜持仓超过48小时。",
+    "max_holding": "48小时"
+  },
+  
+  "invalidation": {
+    "price": 42150,
+    "condition": "跌破4小时EMA21",
+    "action": "止损离场，开仓逻辑失效"
+  },
+  
+  "warnings": [
+    "恐贪指数72接近过热区，突破80要减仓",
+    "资金费率0.0125%偏高，持仓成本每8小时0.0125%",
+    "如果48小时内没有到达第一止盈位，考虑主动减仓"
+  ],
+  
+  "summary": "这是一笔4小时级别的顺势交易，日线多头+4小时金叉+15分钟企稳构成入场依据。用2倍杠杆、5%仓位试探，止损1.5倍ATR，分三档止盈。预期持仓12-48小时，不恋战。"
+}
+```
+
+**Prompt模板**:
+```
+## 角色设定
+
+你是一位拥有15年交易经验的首席交易官，专注于加密货币的中低频趋势交易。
+
+### ⚠️ 第一条铁律：风控官一票否决权（必须严格遵守）
+
+**这是System Prompt的第一条指令，优先级最高，不可违反：**
+
+如果风控官报告中的 `position_allowed` 为 `false`，你必须：
+1. **无条件输出 `action: "no_action"`**
+2. **不允许任何理由反驳或解释**
+3. **不允许尝试"和稀泥"或强行解释开仓**
+4. **不允许因为技术分析看多或情绪分析看多而忽略风控官的否决**
+
+**示例场景**：
+- 技术分析：强烈看多（+80分）→ 建议做多
+- 情绪分析：极度贪婪（建议做空）
+- 风控：`position_allowed: false`（Risk Score > 0.7）→ **禁止开仓**
+
+**正确决策**：`action: "no_action"`，reasoning中说明："风控官已禁止开仓，风险评分过高，无条件遵守风控决定。"
+
+**错误决策**：任何试图解释"虽然风控禁止，但技术面很强，可以轻仓试探"的行为都是违反规则的。
+
+**冲突解决优先级**：
+1. **风控官否决权**（最高优先级，一票否决）
+2. 技术分析与情绪分析的冲突：综合判断，但必须在风控允许的前提下
+3. 其他因素：在风控和技术/情绪都允许的情况下考虑
+
+### 你的交易框架
+- **周期选择**: 你做的是15分钟/4小时/日线级别的趋势交易，不做超短线
+- **核心方法**: 日线定方向，4小时找结构，15分钟找入场点
+- **持仓时间**: 通常12小时到几天，不做日内超短，也不做长线持仓
+
+### 你的交易履历
+- 经历过2017牛市、2018熊市、2020年312、2021年519、2022年LUNA/FTX
+- 这些经历让你深刻理解：顺势交易+严格风控+合理仓位=长期生存
+- 你不追求暴富，追求的是稳定盈利和活得久
+
+### 你的交易哲学
+- "日线看方向，4小时看结构，15分钟看入场"
+- "不和趋势作对，但也不在趋势末期追高"
+- "仓位管理比方向判断更重要"
+- "每一笔交易都要想好错了怎么办"
+- "没有100%确定的交易，只有正期望值的系统"
+
+### 你的决策原则
+- 至少两个周期共振才考虑入场（如4小时+15分钟同向）
+- 日线趋势是大方向，不逆着日线做单
+- 4小时级别的MACD金叉/死叉是重要的结构信号
+- 15分钟用来精确入场，找到好的风险回报比
+- 风险回报比至少2:1才值得做
+- 单笔风险不超过2%
+
+### 你的时间框架思维
+- 15分钟信号：持仓预期4-12小时
+- 4小时信号：持仓预期12-48小时
+- 日线信号：持仓预期2-7天
+- 你目前主要做4小时级别的交易，用15分钟优化入场
+
+---
+
+## 决策会议
+
+{cto_input_data}
+
+---
+
+## 你的任务
+
+用第一人称视角，像老交易员自言自语一样完成分析和决策：
+
+### 1. 市场结构分析（analysis.market_structure）
+- 日线在什么趋势里？是上涨、下跌还是震荡？
+- 4小时现在是什么结构？金叉还是死叉？回调还是突破？
+- 15分钟呈现什么形态？是否适合入场？
+- 三个周期是否共振？
+
+### 2. 情绪面判断（analysis.sentiment_overview）
+- 恐贪指数说明什么？是否极端？
+- 资金费率高不高？多头拥挤吗？
+- 机构在买还是在卖（ETF资金流）？
+- 综合情绪支持做多还是做空？
+
+### 3. 风险评估（analysis.risk_assessment）
+- 风控官的评分和建议是什么？
+- 你认可这个风险评估吗？
+- 仓位和杠杆打算怎么设置？
+
+### 4. 核心逻辑（analysis.core_logic）
+- 用一段话总结：为什么要做这笔交易？
+
+### 5. 决策（decision）
+- action: open_long / open_short / no_action
+- reasoning: 为什么这么决定？
+
+### 6. 执行计划（execution）
+- 入场价位和方式
+- 杠杆和仓位
+
+### 7. 止盈止损计划（plans + plans_reasoning）
+- 设置分档止盈止损
+- amount用**百分比**（如30表示30%仓位）
+- 止盈百分比之和应为100%（全部仓位分配完）
+- 止损统一设100%（触发则全部止损）
+- 解释为什么这样设置
+
+### 8. 时间框架（time_frame）
+- 这笔交易预期持仓多久？
+- 基于什么周期级别的信号？
+- 最长持仓时间？
+
+### 9. 失效条件（invalidation）
+- 什么价位/条件下开仓逻辑失效？
+- 失效后怎么处理？
+
+### 10. 风险提示（warnings）
+- 这笔交易需要警惕什么？
+- 什么情况需要提前行动？
+
+### 11. 总结（summary）
+- 一段话概括这笔交易
+
+---
+
+## 输出格式
+
+```json
+{
+  "analyst": "cto",
+  "timestamp": "ISO时间",
+  "symbol": "交易对",
+  "current_price": 当前价,
+  
+  "analysis": {
+    "market_structure": "多周期结构分析...",
+    "sentiment_overview": "情绪面分析...",
+    "risk_assessment": "风险评估...",
+    "core_logic": "核心交易逻辑..."
+  },
+  
+  "decision": {
+    "action": "open_long/open_short/no_action",
+    "reasoning": "决策理由..."
+  },
+  
+  "execution": {
+    "entry": {"price": 价格, "type": "limit/market", "reason": "理由"},
+    "position": {"leverage": 杠杆, "size_percent": 仓位百分比, "reason": "理由"}
+  },
+  
+  "plans": [
+    {"take_profit": 价格, "amount": 百分比, "reason": "理由"},
+    {"stop_loss": 价格, "amount": 百分比, "reason": "理由"}
+  ],
+  // 注意：amount是百分比（30=30%），止盈分档之和=100%，止损设100%
+  
+  "plans_reasoning": "止盈止损设置的整体逻辑...",
+  
+  "time_frame": {
+    "expected_duration": "预期持仓时间",
+    "logic": "时间框架的逻辑",
+    "max_holding": "最长持仓时间"
+  },
+  
+  "invalidation": {
+    "price": 失效价格,
+    "condition": "失效条件",
+    "action": "失效后行动"
+  },
+  
+  "warnings": ["警告1", "警告2"],
+  
+  "summary": "一段话总结"
+}
+```
+
+**核心要求**：
+1. 用中文，第一人称，像交易员自言自语
+2. 多周期分析要体现15m/4h/1d的层次
+3. 时间框架要明确（这是4小时级别的交易还是日线级别的？）
+4. 止盈止损的amount用百分比（30/40/30这样）
+5. 简洁有力，不要废话
+```
+
+---
+
+### 2.4.1 CTO的决策权重与冲突解决
+
+#### 问题描述
+
+CTO提示词中提到"综合各分析师意见"，但在实际决策中可能出现分析师意见冲突的情况，需要明确的冲突解决机制。
+
+#### 典型冲突场景
+
+**场景1：技术面与风控冲突**
+- 技术分析：强烈看多（+80分）
+- 情绪分析：极度贪婪（建议做空）
+- 风控：`position_allowed: false`（Risk Score > 0.7）
+
+**场景2：技术面与情绪面冲突**
+- 技术分析：强烈看多（+80分）
+- 情绪分析：极度贪婪（建议做空）
+- 风控：`position_allowed: true`（Risk Score < 0.5）
+
+**场景3：多因素冲突**
+- 技术分析：看多（+60分）
+- 情绪分析：中性偏多
+- 风控：`position_allowed: false`（Risk Score > 0.7）
+
+#### 冲突解决机制
+
+**优先级规则（从高到低）**：
+
+1. **风控官一票否决权（最高优先级）**
+   - 如果 `position_allowed: false`，CTO必须输出 `action: "no_action"`
+   - 不允许任何理由反驳或解释
+   - 不允许"和稀泥"或强行解释开仓
+   - 这是System Prompt的第一条指令，不可违反
+
+2. **技术分析与情绪分析冲突**
+   - 在风控允许的前提下，综合判断
+   - 如果技术面强烈看多（+80分）但情绪面看空，优先考虑技术面（因为技术面是趋势跟踪的核心）
+   - 如果情绪面极度贪婪（>80）但技术面看多，需要降低仓位或观望
+
+3. **其他因素**
+   - 交易成本、时间框架、账户状态等
+   - 在风控和技术/情绪都允许的情况下考虑
+
+#### 决策流程
+
+```
+1. 检查风控官报告
+   ├── position_allowed: false → 直接输出 no_action（结束）
+   └── position_allowed: true → 继续下一步
+
+2. 综合技术分析与情绪分析
+   ├── 两者同向 → 按置信度决定仓位
+   ├── 技术面强但情绪面弱 → 降低仓位，谨慎开仓
+   └── 技术面弱但情绪面强 → 观望或轻仓试探
+
+3. 考虑其他因素
+   ├── 交易成本（资金费率、手续费）
+   ├── 时间框架匹配度
+   └── 账户状态（余额、已有持仓）
+```
+
+#### 实施建议
+
+1. **在Prompt中明确写入**：风控官一票否决权作为System Prompt的第一条指令
+2. **代码层面校验**：在执行CTO决策前，检查风控官的`position_allowed`字段
+3. **日志记录**：记录所有冲突场景和CTO的决策过程，便于后续优化
+
+#### 代码实现示例
+
+```python
+def validate_cto_decision(cto_decision: dict, risk_report: dict) -> tuple[bool, str]:
+    """
+    校验CTO决策是否符合风控要求
+    返回: (是否通过, 拒绝原因)
+    """
+    # 风控官一票否决权检查
+    if not risk_report.get("assessment", {}).get("position_allowed", True):
+        if cto_decision.get("decision", {}).get("action") != "no_action":
+            return False, "风控官已禁止开仓，但CTO仍建议开仓，违反一票否决权规则"
+    
+    return True, ""
+```
+
+---
+
+### 2.5 持仓管理AI (Position Manager)
+
+**模型**: Claude-Sonnet-4.5
+
+**职责**: 以第一人称视角监控现有持仓，动态调整策略
+
+**预处理后的输入格式**:
+
+```
+## 持仓管理数据摘要
+生成时间: 2024-01-15 12:45:00 UTC
+交易对: BTCUSDT
+
+---
+
+### 一、当前持仓状态
+
+#### 基本信息
+- 持仓ID: pos_123456
+- 方向: 多头 (Long)
+- 入场价: 42,800 USDT
+- 当前价: 43,500 USDT
+- 杠杆: 2x
+
+#### 盈亏状态
+- 浮动盈亏: +350 USDT
+- 盈亏比例: +1.63%
+- 持仓时间: 2小时15分钟
+
+#### 止损止盈设置
+- 当前止损: 42,271 (-1.35%)
+- 当前止盈: 45,000 (+5.14%)
+- 强平价格: 38,500
+
+#### 状态评估
+| 指标 | 值 | 状态 |
+|------|-----|------|
+| 盈亏 | +1.63% | ✅ 盈利中 |
+---
+
+### 二、原始开仓决策（CTO完整思维链）
+
+```
+决策时间: 2024-01-15 10:30:00
+方向: 做多
+置信度: 0.75
+
+CTO分析思路:
+"日线多头趋势明确，4小时刚出现MACD金叉，15分钟回调到EMA21获得支撑，三周期共振向上。
+这是一笔4小时级别的顺势交易。ETF连续5日流入说明机构在买，虽然恐贪指数72偏高但还没到
+极端区。风控给的0.35评分可接受。我用2倍杠杆、5%仓位进场，风险回报比2.4:1。"
+
+开仓依据:
+1. 日线多头趋势 + 4小时MACD金叉 + 15分钟EMA支撑
+2. ETF连续5日净流入，机构看好
+3. 风控评分0.35可接受
+
+失效条件: 跌破42,150 (4h EMA21) —— 跌破说明4小时结构被破坏
+
+预期持仓时间: 12-48小时（4小时级别交易）
+
+原定止盈止损:
+- 止损: 42,271 (1.5倍ATR)
+- 止盈1: 43,450 (30%) - 15m BB上轨
+- 止盈2: 44,200 (40%) - 4h BB上轨  
+- 止盈3: 45,000 (30%) - 前高
+```
+
+---
+
+### 三、累计交易成本
+
+| 成本项 | 金额 | 说明 |
+|--------|------|------|
+| 开仓手续费 | -2.57 USDT | 0.06% × 4,280 |
+| 已扣资金费率 | -5.35 USDT | 0.0125% × 2次 |
+| **累计成本** | **-7.92 USDT** | |
+
+当前资金费率: 0.0130%（每8小时）
+下次扣费时间: 2024-01-15 16:00:00 UTC
+预计下次扣费: -2.78 USDT
+
+**成本提醒**: 每次操作（加仓/减仓/平仓）都会产生手续费
+
+---
+
+### 四、最新技术状态
+
+| 周期 | EMA排列 | RSI | MACD | 变化 |
+|------|---------|-----|------|------|
+| 15分钟 | 多头 ✅ | 68.2 ⚠️ | 扩张 ✅ | RSI接近超买 |
+| 4小时 | 多头 ✅ | 61.2 | 扩张 ✅ | 趋势完好 |
+
+---
+
+### 五、最新情绪状态
+
+| 指标 | 当前 | 变化 |
+|------|------|------|
+| 恐贪指数 | 73 | +1 |
+| 资金费率 | 0.0130% | ⚠️ 继续上升 |
+
+---
+
+### 六、关键价位
+
+- 支撑: 43,200 / 42,850 / 42,271(止损)
+- 阻力: 43,800 / 44,200 / 45,000(止盈)
+
+---
+
+请对这个持仓进行管理决策。
+```
+
+**输出结构**:
+
+```json
+{
+  "analyst": "position_manager",
+  "timestamp": "2024-01-15T12:45:00Z",
+  "position_id": "pos_123456",
+  "symbol": "ETHUSDT",
+  
+  "analysis": {
+    "market": "BTC在关键阻力位震荡，大盘情绪偏谨慎，ETH跟随但相对强势。4小时级别多头趋势完好，15分钟出现超买迹象。",
+    "sentiment": "恐贪指数72偏贪婪但未极端，资金费率0.013%多头略拥挤，ETF连续5日净流入显示机构仍在买入。整体情绪偏多但需警惕过热。",
+    "position": "持仓6个ETH，入场价3280，当前3350，盈利2.13%。累计成本7.92 USDT（手续费+资金费率）。开仓逻辑(三周期EMA共振+MACD金叉)依然有效。"
+  },
+  
+  "decision": {
+    "action": "adjust_sl_tp",
+    "reasoning": "已经盈利2%+了，按我的原则必须保护利润。趋势还在，没理由现在跑，但也不能让盈利变亏损。所以上移止损到3300，即使回调也能保住0.6%的利润。"
+  },
+  
+  "plans": [
+    {"take_profit": 3400, "amount": 1},
+    {"take_profit": 3480, "amount": 2},
+    {"take_profit": 3550, "amount": 1},
+    {"stop_loss": 3300, "amount": 1},
+    {"stop_loss": 3250, "amount": 1}
+  ],
+  
+  "plans_reasoning": "6个ETH分配：止盈4个(3400/3480/3550)，止损2个(3300/3250)。",
+  
+  "next_steps": "盯着RSI，过75就考虑提前减仓。MACD死叉就全平。",
+  
+  "wake_up": {
+    "price_above": 3400,
+    "price_below": 3280,
+    "reason": "上破3400触发第一档止盈，下破3280回到入场价需重新评估"
+  }
+}
+}
+```
+
+---
+
+**不同操作的输出示例**：
+
+### 加仓 (add)
+```json
+{
+  "analysis": {
+    "market": "BTC突破关键阻力68000，带动大盘情绪回暖，山寨开始补涨。",
+    "sentiment": "恐贪指数从65升到70，资金费率温和，ETF大额流入，市场做多意愿强烈。",
+    "position": "持仓6个ETH盈利3.5%，价格突破3400确认，趋势加速迹象明显。"
+  },
+  
+  "decision": {
+    "action": "add",
+    "reasoning": "突破确认了，这是加仓信号。原来的仓位已经有利润保护，现在加2个ETH放大收益。新仓位止损设在突破位下方，即使打止损也就亏新加的部分，原仓位利润还在。"
+  },
+  
+  "add_detail": {
+    "amount": 2,
+    "price": 3420,
+    "position_after": 8
+  },
+  
+  "plans": [
+    {"take_profit": 3500, "amount": 2},
+    {"take_profit": 3580, "amount": 3},
+    {"take_profit": 3650, "amount": 1},
+    {"stop_loss": 3380, "amount": 1},
+    {"stop_loss": 3350, "amount": 1}
+  ],
+  
+  "plans_reasoning": "加仓后8个ETH：止盈6个分三档出(3500/3580/3650)，止损保护2个(3380/3350)。加仓的2个如果错了，3380就先砍1个认错。",
+  
+  "next_steps": "加仓后更要盯紧，价格如果回落到3400下方就要警惕假突破。站稳3450再考虑继续加。"
+}
+```
+
+### 减仓 (reduce)
+```json
+{
+  "analysis": {
+    "market": "BTC在69000遇阻回落，大盘出现获利回吐迹象。",
+    "sentiment": "恐贪指数78接近极端贪婪，资金费率0.025%过高，多头过于拥挤。",
+    "position": "持仓6个ETH盈利5.2%，RSI已经78超买，MACD柱状图开始收缩。"
+  },
+  
+  "decision": {
+    "action": "reduce",
+    "reasoning": "情绪过热+技术超买，这种时候不能贪。虽然趋势还没坏，但信号在恶化。先减3个锁定一半利润，剩3个继续拿。对了少赚点，错了不会把利润全吐回去。"
+  },
+  
+  "reduce_detail": {
+    "amount": 3,
+    "price": 3450,
+    "position_after": 3,
+    "realized_pnl": 510
+  },
+  
+  "plans": [
+    {"take_profit": 3550, "amount": 1},
+    {"stop_loss": 3380, "amount": 1},
+    {"stop_loss": 3350, "amount": 1}
+  ],
+  
+  "plans_reasoning": "剩3个ETH：1个继续博3550目标，2个用止损保护。已经落袋510U了，剩下的仓位轻松拿。",
+  
+  "next_steps": "减仓后观察，如果RSI回落到60以下、情绪降温，可以考虑接回来。如果继续恶化就把剩余的也出掉。"
+}
+```
+
+### 平仓 (close)
+```json
+{
+  "analysis": {
+    "market": "BTC跌破66000关键支撑，大盘恐慌性抛售，山寨跌幅更大。",
+    "sentiment": "恐贪指数从72暴跌到45，资金费率转负，ETF出现净流出。情绪急剧恶化。",
+    "position": "持仓6个ETH，从盈利2%变成亏损0.5%。4小时MACD死叉确认，趋势反转。"
+  },
+  
+  "decision": {
+    "action": "close",
+    "reasoning": "MACD死叉+跌破支撑+情绪崩塌，三重确认趋势反转。开仓逻辑已经失效了，没有继续拿的理由。现在跑还是小亏，拖下去可能大亏。认错离场，保存实力。"
+  },
+  
+  "close_detail": {
+    "amount": 6,
+    "price": 3260,
+    "realized_pnl": -120
+  },
+  
+  "plans": [],
+  
+  "plans_reasoning": "全部平仓，没有plans。亏了120U，但比继续拿着亏更多强。",
+  
+  "next_steps": "离场观望，等市场企稳再说。关注3200能不能守住，守住了再找机会进。这波认栽，下次注意趋势反转信号。"
+}
+```
+
+### 继续持有 (hold)
+```json
+{
+  "analysis": {
+    "market": "BTC在67000-68000区间震荡整理，方向不明。",
+    "sentiment": "恐贪指数65中性偏多，资金费率正常，没有极端信号。",
+    "position": "持仓6个ETH盈利1.2%，趋势完好但动能一般，没有新的利好或利空。"
+  },
+  
+  "decision": {
+    "action": "hold",
+    "reasoning": "没什么变化，开仓逻辑还在，趋势没坏。盈利1.2%不多不少，还没到必须保护的程度。继续拿着，等方向出来再说。现有的止盈止损计划不变。"
+  },
+  
+  "plans": [
+    {"take_profit": 3400, "amount": 2},
+    {"take_profit": 3480, "amount": 2},
+    {"stop_loss": 3250, "amount": 1},
+    {"stop_loss": 3200, "amount": 1}
+  ],
+  
+  "plans_reasoning": "维持原计划，止盈4个+止损2个=6个。没有调整的必要。",
+  
+  "next_steps": "继续观察，如果盈利超过2%就上移止损保护。如果跌破3280入场价就重新评估。"
+}
+```
+
+**Prompt模板**:
+```
+## 角色设定
+
+你是一位顶尖的加密货币持仓管理专家，拥有15年实战经验。用第一人称视角思考和表达，像一个老练的交易员在自言自语。
+
+### 核心原则
+- 盈利>2%必须保护利润，永远不让2%+盈利变亏损
+- RSI>75考虑减仓，MACD死叉是离场信号
+- 开仓逻辑失效就果断走人
+
+---
+
+## 持仓数据
+
+{position_management_summary}
+
+---
+
+## 你的任务
+
+用第一人称，像老交易员自言自语一样分析和决策：
+
+### 1. 分析（analysis）
+- **market**: 大盘怎么样？BTC在什么位置？整体趋势如何？
+- **sentiment**: 情绪面怎么样？恐贪指数、资金费率说明什么？
+- **position**: 我的仓位现在什么情况？累计成本多少？开仓逻辑还有效吗？
+
+### 2. 决策（decision）
+- **action**: hold / adjust_sl_tp / add / reduce / close
+- **reasoning**: 为什么这么做？注意每次操作都有手续费成本
+
+### 3. 执行计划（plans）
+如果有仓位变动（add/reduce），要给出detail
+必须给出plans数组：
+- amount是**币的数量**（如2个ETH），不是百分比
+- 止盈amount之和 + 止损amount之和 = 操作后总仓位
+
+### 4. Plans理由（plans_reasoning）
+为什么这样设置止盈止损？
+
+### 5. 下一步（next_steps）
+接下来盯什么？
+
+### 6. 唤醒价格（wake_up）
+设置下次提前唤醒的价格条件（默认每5分钟唤醒一次，但可以设置价格触发提前唤醒）
+
+---
+
+## 输出格式
+
+```json
+{
+  "analyst": "position_manager",
+  "timestamp": "ISO时间",
+  "position_id": "持仓ID",
+  "symbol": "交易对",
+  
+  "analysis": {
+    "market": "大盘分析...",
+    "sentiment": "情绪面分析...",
+    "position": "持仓状态分析（包含累计成本）..."
+  },
+  
+  "decision": {
+    "action": "hold/adjust_sl_tp/add/reduce/close",
+    "reasoning": "第一人称解释为什么这么决策..."
+  },
+  
+  // 如果是add
+  "add_detail": {"amount": 加仓数量, "price": 价格, "position_after": 操作后总数量},
+  
+  // 如果是reduce  
+  "reduce_detail": {"amount": 减仓数量, "price": 价格, "position_after": 操作后总数量, "realized_pnl": 已实现盈亏},
+  
+  // 如果是close
+  "close_detail": {"amount": 平仓数量, "price": 价格, "realized_pnl": 已实现盈亏},
+  
+  "plans": [
+    {"take_profit": 价格, "amount": 数量},
+    {"stop_loss": 价格, "amount": 数量}
+  ],
+  
+  "plans_reasoning": "为什么这样设置止盈止损...",
+  
+  "next_steps": "接下来的计划和关注点...",
+  
+  "wake_up": {
+    "price_above": 上破此价格提前唤醒,
+    "price_below": 下破此价格提前唤醒,
+    "reason": "为什么设置这个唤醒价格"
+  }
+}
+```
+
+**字段说明**：
+- plans.amount: **币的数量**（如ETH个数），不是百分比
+- 校验规则: 所有plans的amount之和 = 操作后总仓位（position_after 或当前持仓）
+- 示例: 持仓6个ETH，plans应该是 止盈4个 + 止损2个 = 6个
+
+**要求**：
+1. 用中文，第一人称，像交易员自言自语
+2. plans止盈+止损=操作后总仓位（数量之和）
+3. 简洁有力，不要废话
+```
+
+---
+
+## 三、系统工作流程
+
+### 3.1 开仓流程
+
+```
+1. 市场信号检测器触发
+         ↓
+2. 数据预处理层
+   ├── prepare_technical_summary()
+   ├── prepare_sentiment_summary()
+   └── prepare_risk_summary()
+         ↓
+3. 并行调用三个分析AI (超时30秒)
+   ├── 技术分析师 → JSON报告
+   ├── 情绪分析师 → JSON报告
+   └── 风控官 → JSON报告
+         ↓
+4. 组装CTO输入，调用首席交易官
+         ↓
+5. 解析CTO决策JSON
+         ↓
+6. 决策执行
+   ├── no_action → 记录日志
+   └── open_long/short → 计算开仓数量 → 调用交易所API
+         ↓
+7. 创建持仓记录，启动持仓管理
+```
+
+### 3.2 开仓数量计算
+
+```python
+def calculate_position_size(
+    account_balance: float,      # 账户余额
+    position_pct: float,         # 仓位百分比 (如 5 表示 5%)
+    leverage: int,               # 杠杆倍数
+    entry_price: float,          # 入场价格
+    symbol: str                  # 交易对
+) -> float:
+    """
+    计算开仓数量
+    
+    示例:
+    - 账户余额: 10,000 USDT
+    - 仓位百分比: 5%
+    - 杠杆: 2x
+    - 入场价: 42,850 USDT
+    
+    计算:
+    - 投入本金 = 10,000 × 5% = 500 USDT
+    - 持仓价值 = 500 × 2 = 1,000 USDT
+    - 开仓数量 = 1,000 / 42,850 = 0.0233 BTC
+    """
+    capital = account_balance * (position_pct / 100)
+    position_value = capital * leverage
+    quantity = position_value / entry_price
+    
+    # 根据交易对精度取整
+    quantity = round_to_precision(quantity, symbol)
+    
+    return quantity
+```
+
+### 3.3 错误处理机制
+
+```python
+# AI调用超时处理
+AI_TIMEOUT = 30  # 秒
+
+async def call_analyst_with_timeout(analyst, data):
+    try:
+        result = await asyncio.wait_for(
+            analyst.analyze(data),
+            timeout=AI_TIMEOUT
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.error(f"{analyst.name} 超时")
+        return None
+
+# 并行调用 - 任一超时则取消开仓
+async def parallel_analysis(data):
+    results = await asyncio.gather(
+        call_analyst_with_timeout(technical_analyst, data),
+        call_analyst_with_timeout(sentiment_analyst, data),
+        call_analyst_with_timeout(risk_analyst, data),
+        return_exceptions=True
+    )
+    
+    technical, sentiment, risk = results
+    
+    # 任一分析师超时/失败，都不开仓
+    if technical is None:
+        logger.error("技术分析师超时，取消开仓决策")
+        return None
+    
+    if sentiment is None:
+        logger.error("情绪分析师超时，取消开仓决策")
+        return None
+        
+    if risk is None:
+        logger.error("风控官超时，取消开仓决策")
+        return None
+    
+    return {"technical": technical, "sentiment": sentiment, "risk": risk}
+
+# JSON解析 - 使用结构化输出
+from pydantic import BaseModel
+from typing import List, Optional
+
+class TechnicalReport(BaseModel):
+    analyst: str
+    recommendation: dict
+    # ... 其他字段
+
+def parse_ai_response(response: str, model_class: BaseModel):
+    """
+    使用Pydantic强制校验JSON结构
+    推荐配合 Anthropic/OpenAI 的 JSON Mode 使用
+    """
+    try:
+        # 提取JSON部分
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if not json_match:
+            raise ValueError("未找到JSON")
+        
+        data = json.loads(json_match.group())
+        return model_class(**data)  # Pydantic校验
+    except Exception as e:
+        logger.error(f"JSON解析失败: {e}")
+        return None
+```
+
+### 3.4 硬风控（代码层面，不可被AI绕过）
+
+```python
+"""
+硬风控规则 - 写在代码里，AI无法绕过
+这些是最后一道防线，防止AI幻觉导致灾难性损失
+"""
+
+class HardRiskLimits:
+    """硬性风控限制 - 不可修改"""
+    
+    # 杠杆限制
+    MAX_LEVERAGE = 5                    # 最大杠杆，无论AI建议多少
+    
+    # 仓位限制
+    MAX_POSITION_PCT = 10               # 单笔最大仓位10%
+    MAX_TOTAL_EXPOSURE_PCT = 30         # 总敞口不超过30%
+    
+    # 亏损限制
+    MAX_LOSS_PER_TRADE_PCT = 2          # 单笔最大亏损2%
+    MAX_DAILY_LOSS_PCT = 5              # 单日最大亏损5%
+    MAX_WEEKLY_LOSS_PCT = 10            # 单周最大亏损10%
+    
+    # 频率限制
+    MAX_TRADES_PER_HOUR = 3             # 每小时最多开仓3次
+    MIN_TRADE_INTERVAL_SECONDS = 300    # 两笔交易最小间隔5分钟
+
+
+def hard_risk_check(
+    ai_decision: dict,
+    account_state: dict,
+    recent_trades: list
+) -> tuple[bool, str, dict]:
+    """
+    硬风控检查 - 在执行前强制校验
+    返回: (是否通过, 拒绝原因, 调整后的参数)
+    """
+    
+    leverage = ai_decision.get("leverage", 1)
+    position_pct = ai_decision.get("position_pct", 0)
+    
+    adjusted = ai_decision.copy()
+    warnings = []
+    
+    # 1. 杠杆检查
+    if leverage > HardRiskLimits.MAX_LEVERAGE:
+        adjusted["leverage"] = HardRiskLimits.MAX_LEVERAGE
+        warnings.append(f"杠杆从{leverage}x降至{HardRiskLimits.MAX_LEVERAGE}x")
+    
+    # 2. 仓位检查
+    if position_pct > HardRiskLimits.MAX_POSITION_PCT:
+        adjusted["position_pct"] = HardRiskLimits.MAX_POSITION_PCT
+        warnings.append(f"仓位从{position_pct}%降至{HardRiskLimits.MAX_POSITION_PCT}%")
+    
+    # 3. 总敞口检查
+    current_exposure = account_state.get("total_exposure_pct", 0)
+    if current_exposure + position_pct > HardRiskLimits.MAX_TOTAL_EXPOSURE_PCT:
+        return False, f"总敞口将超过{HardRiskLimits.MAX_TOTAL_EXPOSURE_PCT}%限制", {}
+    
+    # 4. 日亏损检查
+    daily_pnl_pct = account_state.get("daily_pnl_pct", 0)
+    if daily_pnl_pct <= -HardRiskLimits.MAX_DAILY_LOSS_PCT:
+        return False, f"今日已亏损{abs(daily_pnl_pct)}%，触发日亏损限制，停止交易", {}
+    
+    # 5. 周亏损检查
+    weekly_pnl_pct = account_state.get("weekly_pnl_pct", 0)
+    if weekly_pnl_pct <= -HardRiskLimits.MAX_WEEKLY_LOSS_PCT:
+        return False, f"本周已亏损{abs(weekly_pnl_pct)}%，触发周亏损限制，停止交易", {}
+    
+    # 6. 频率检查
+    recent_hour_trades = [t for t in recent_trades if t["time"] > time.time() - 3600]
+    if len(recent_hour_trades) >= HardRiskLimits.MAX_TRADES_PER_HOUR:
+        return False, "本小时交易次数已达上限", {}
+    
+    # 7. 间隔检查
+    if recent_trades:
+        last_trade_time = recent_trades[-1]["time"]
+        if time.time() - last_trade_time < HardRiskLimits.MIN_TRADE_INTERVAL_SECONDS:
+            return False, "距上笔交易时间过短", {}
+    
+    if warnings:
+        logger.warning(f"硬风控调整: {', '.join(warnings)}")
+    
+    return True, "", adjusted
+
+
+# 使用示例
+def execute_trade(ai_decision, account_state, recent_trades):
+    """执行交易前必须通过硬风控"""
+    
+    passed, reason, adjusted = hard_risk_check(ai_decision, account_state, recent_trades)
+    
+    if not passed:
+        logger.error(f"硬风控拒绝: {reason}")
+        return None
+    
+    # 使用调整后的参数执行
+    return place_order(adjusted)
+```
+
+### 3.5 持仓管理流程
+
+```
+触发条件（满足任一即唤醒）:
+├── 定时: 每5分钟
+├── 价格触发: 达到wake_up.price_above 或 price_below
+└── 强制: 止盈/止损订单成交时
+
+         ↓
+1. 获取活跃持仓列表
+         ↓
+2. 对每个持仓:
+   └── prepare_position_summary()
+       - 包含CTO完整思维链
+       - 包含累计交易成本
+       - 包含当前资金费率
+         ↓
+3. 调用持仓管理AI
+         ↓
+4. 解析决策JSON + 校验plans数量
+         ↓
+5. 执行操作
+   ├── hold → 继续监控
+   ├── adjust_sl_tp → 修改订单
+   ├── reduce → 部分平仓（产生手续费）
+   ├── add → 加仓（产生手续费）
+   └── close → 全部平仓（产生手续费）
+         ↓
+6. 更新持仓记录 + 累计成本
+         ↓
+7. 设置下次唤醒条件（wake_up）
+         ↓
+8. 等待触发
+```
+
+```python
+# Plans数量校验（代码层面，防止AI计算错误）
+def validate_plans(plans: list, position_amount: float) -> bool:
+    """
+    校验plans数量之和是否等于持仓数量
+    如果不等，记录警告并调整
+    """
+    total = sum(p["amount"] for p in plans)
+    
+    if abs(total - position_amount) > 0.001:  # 允许微小误差
+        logger.warning(f"Plans数量不匹配: plans总量={total}, 持仓={position_amount}")
+        # 自动调整最后一个plan的数量
+        diff = position_amount - total
+        plans[-1]["amount"] += diff
+        logger.info(f"自动调整最后一个plan: {plans[-1]}")
+    
+    return True
+
+# 价格触发唤醒
+class PriceWatcher:
+    def __init__(self):
+        self.wake_conditions = {}  # position_id -> wake_up
+    
+    def set_wake_up(self, position_id: str, wake_up: dict):
+        self.wake_conditions[position_id] = wake_up
+    
+    def check_price(self, position_id: str, current_price: float) -> bool:
+        """检查是否需要唤醒"""
+        wake = self.wake_conditions.get(position_id)
+        if not wake:
+            return False
+        
+        if current_price >= wake.get("price_above", float('inf')):
+            logger.info(f"价格上破 {wake['price_above']}，唤醒持仓管理AI")
+            return True
+        
+        if current_price <= wake.get("price_below", 0):
+            logger.info(f"价格下破 {wake['price_below']}，唤醒持仓管理AI")
+            return True
+        
+        return False
+```
+
+### 3.5 多交易对支持
+
+系统支持多个交易对，每个交易对有独立的配置：
+
+```python
+SUPPORTED_SYMBOLS = {
+    "BTCUSDT": {
+        "name": "比特币",
+        "min_qty": 0.001,
+        "qty_precision": 3,      # 数量精度：0.001
+        "price_precision": 1,    # 价格精度：0.1
+        "min_notional": 5,       # 最小名义价值：5 USDT
+        "max_leverage": 20,
+        "default_leverage": 3
+    },
+    "ETHUSDT": {
+        "name": "以太坊",
+        "min_qty": 0.01,
+        "qty_precision": 2,
+        "price_precision": 2,
+        "min_notional": 5,
+        "max_leverage": 20,
+        "default_leverage": 3
+    },
+    "SOLUSDT": {
+        "name": "Solana",
+        "min_qty": 0.1,
+        "qty_precision": 1,
+        "price_precision": 3,
+        "min_notional": 5,
+        "max_leverage": 15,
+        "default_leverage": 2
+    }
+}
+
+def get_symbol_config(symbol: str) -> dict:
+    """获取交易对配置"""
+    if symbol not in SUPPORTED_SYMBOLS:
+        raise ValueError(f"不支持的交易对: {symbol}")
+    return SUPPORTED_SYMBOLS[symbol]
+
+def round_to_precision(quantity: float, symbol: str) -> float:
+    """根据交易对精度取整"""
+    config = get_symbol_config(symbol)
+    precision = config["qty_precision"]
+    return round(quantity, precision)
+```
+
+---
+
+## 四、附录：判断基准速查表
+
+### 恐惧贪婪指数
+| 区间 | 状态 | 操作建议 |
+|------|------|----------|
+| 0-20 | 极度恐惧 | 逆向看多 |
+| 20-40 | 恐惧 | 谨慎看多 |
+| 40-60 | 中性 | 顺势操作 |
+| 60-80 | 贪婪 | 顺势但控仓 |
+| 80-100 | 极度贪婪 | 逆向看空 |
+
+### 资金费率
+| 区间 | 状态 | 操作建议 |
+|------|------|----------|
+| < -0.03% | 极度空头 | 逆向看多 |
+| -0.03% ~ -0.01% | 偏空 | 注意反弹 |
+| -0.01% ~ 0.01% | 中性 | 正常操作 |
+| 0.01% ~ 0.03% | 偏多 | 注意回调 |
+| > 0.03% | 极度多头 | 逆向看空 |
+
+### ADX趋势强度
+| 值 | 状态 | 操作建议 |
+|----|------|----------|
+| < 20 | 震荡 | 区间交易 |
+| 20-25 | 弱趋势 | 谨慎追趋势 |
+| 25-50 | 有效趋势 | 顺势操作 |
+| > 50 | 强趋势 | 趋势末期警惕 |
+
+### RSI状态
+| 值 | 状态 | 操作建议 |
+|----|------|----------|
+| < 30 | 超卖 | 关注反弹 |
+| 30-50 | 偏弱 | 谨慎做多 |
+| 50-70 | 健康 | 正常操作 |
+| > 70 | 超买 | 关注回调 |
+
+### 波动率(ATR%)
+| 值 | 状态 | 杠杆建议 |
+|----|------|----------|
+| < 0.5% | 低波动 | 可提高杠杆 |
+| 0.5-1.5% | 正常 | 标准杠杆 |
+| 1.5-3.0% | 高波动 | 降低杠杆 |
+| > 3.0% | 极端 | 最低杠杆或观望 |
+
+### 持仓管理原则
+| 盈利水平 | 止损调整 | 止盈策略 |
+|----------|----------|----------|
+| < 1% | 保持原止损 | 等待 |
+| 1-2% | 可移至保本 | 等待 |
+| 2-3% | 至少保护0.5% | 考虑部分止盈 |
+| > 3% | 启用追踪止损 | 分批止盈 |
+
+---
+
+*文档版本: v4.1*  
+*更新日期: 2024年*  
+*核心改进:*
+- *精简AI输入数据（删除判断基准表、历史对比数据）*
+- *精简AI输出结构（扁平化JSON）*
+- *增强首席交易官多周期框架（15m/4h/1d）*
+- *持仓管理AI第一人称思考输出*
+- *添加错误处理机制和开仓数量计算*
+- *添加多交易对支持*
+- *风控官添加7天历史交易记录*

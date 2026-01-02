@@ -16,7 +16,7 @@ from app.utils.logger import logger
 class KlineSyncManager(threading.Thread):
     """K线数据同步管理器（后台线程）"""
     
-    def __init__(self, api_manager: APIManager, symbol: str):
+    def __init__(self, api_manager: APIManager, symbol: str, market_detector=None):
         super().__init__(name=f"KlineSyncThread-{symbol}", daemon=False)
         self.api_manager = api_manager
         self.symbol = symbol  # 币种名称：BTC, ETH等
@@ -24,6 +24,7 @@ class KlineSyncManager(threading.Thread):
         self.stop_event = threading.Event()
         self.indicator_calculator = IndicatorCalculator()
         self.db = db
+        self.market_detector = market_detector  # 市场检测器（可选）
         
         # 同步状态
         self.last_sync_15m: Optional[datetime] = None
@@ -101,6 +102,13 @@ class KlineSyncManager(threading.Thread):
                 
                 # 无论是否插入新数据，都更新指标（确保数据最新）
                 self.indicator_calculator.update_latest_indicators(timeframe, self.symbol)
+                
+                # 15m K线更新后触发市场检测
+                if timeframe == '15m' and self.market_detector:
+                    try:
+                        self.market_detector.detect()
+                    except Exception as e:
+                        logger.error(f"[{self.symbol}] 触发市场检测失败: {e}", exc_info=True)
                 
                 return True
                     

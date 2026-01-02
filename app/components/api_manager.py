@@ -991,3 +991,441 @@ class APIManager:
             RequestPriority.TRADE,
             _amend_order
         )
+    
+    def amend_algo_order(
+        self,
+        algo_id: str,
+        inst_id: str,
+        new_sz: float,
+        new_tp_trigger_px: float,
+        new_sl_trigger_px: float,
+        new_tp_ord_px: Optional[str] = None,
+        new_sl_ord_px: Optional[str] = None
+    ) -> dict:
+        """
+        修改策略委托订单的数量、止盈止损设置
+        使用 OKX 的修改策略委托订单 API: POST /api/v5/trade/amend-algos
+        
+        Args:
+            algo_id: 策略委托单ID
+            inst_id: 产品ID，如 'BTC-USDT-SWAP'
+            new_sz: 新的订单数量（必填）
+            new_tp_trigger_px: 新的止盈触发价格（必填）
+            new_tp_ord_px: 新的止盈委托价格（'-1' 表示市价单，如果不提供则默认为'-1'）
+            new_sl_trigger_px: 新的止损触发价格（必填）
+            new_sl_ord_px: 新的止损委托价格（'-1' 表示市价单，如果不提供则默认为'-1'）
+            
+        Returns:
+            dict: 修改结果，包含 success 和 data 字段
+        """
+        def _amend_algo_order():
+            try:
+                # 检查API密钥是否配置
+                if not settings.EXCHANGE_API_KEY:
+                    raise ValueError("EXCHANGE_API_KEY未配置，无法修改策略委托订单")
+                
+                if not algo_id:
+                    raise ValueError("algo_id不能为空")
+                
+                if not inst_id:
+                    raise ValueError("inst_id不能为空")
+                
+                if new_sz is None or new_sz <= 0:
+                    raise ValueError("new_sz必须大于0")
+                
+                if new_tp_trigger_px is None:
+                    raise ValueError("new_tp_trigger_px不能为空")
+                
+                if new_sl_trigger_px is None:
+                    raise ValueError("new_sl_trigger_px不能为空")
+                
+                # 构建修改参数
+                request_params = {
+                    'instId': inst_id,
+                    'algoId': algo_id,
+                    'newSz': str(new_sz),
+                    'newTpTriggerPx': str(new_tp_trigger_px),
+                    'newSlTriggerPx': str(new_sl_trigger_px)
+                }
+                
+                # 止盈委托价格
+                if new_tp_ord_px is None:
+                    request_params['newTpOrdPx'] = '-1'
+                else:
+                    request_params['newTpOrdPx'] = new_tp_ord_px
+                
+                # 止损委托价格
+                if new_sl_ord_px is None:
+                    request_params['newSlOrdPx'] = '-1'
+                else:
+                    request_params['newSlOrdPx'] = new_sl_ord_px
+                
+                logger.debug(f"修改策略委托订单参数: {request_params}")
+                
+                # 调用 OKX 的修改策略委托订单 API
+                result = self.exchange.private_post_trade_amend_algos(request_params)
+                
+                if result and 'code' in result:
+                    if result['code'] == '0':
+                        logger.info(
+                            f"策略委托订单修改成功: algoId={algo_id}, "
+                            f"数量={new_sz}, "
+                            f"止损触发价={new_sl_trigger_px}, "
+                            f"止盈触发价={new_tp_trigger_px}"
+                        )
+                        return {
+                            'success': True,
+                            'data': result.get('data', [])
+                        }
+                    else:
+                        error_msg = result.get('msg', '未知错误')
+                        logger.error(f"策略委托订单修改失败: {error_msg}, result={result}")
+                        raise Exception(f"修改策略委托订单失败: {error_msg}")
+                else:
+                    logger.error(f"策略委托订单修改返回异常: {result}")
+                    raise Exception("修改策略委托订单返回结果异常")
+                    
+            except Exception as e:
+                error_str = str(e)
+                # 检查是否是认证错误
+                if ('401' in error_str or 'Unauthorized' in error_str or
+                    'apiKey' in error_str or 'credential' in error_str.lower() or
+                    'authentication' in error_str.lower()):
+                    logger.error(f"修改策略委托订单失败（API密钥未配置或无效）: {error_str}")
+                else:
+                    logger.error(f"修改策略委托订单失败: {error_str}", exc_info=True)
+                raise
+        
+        return self.submit_request(
+            RequestPriority.TRADE,
+            _amend_algo_order
+        )
+    
+    def get_pending_algo_orders(
+        self,
+        inst_id: Optional[str] = None,
+        ord_type: str = 'oco'
+    ) -> dict:
+        """
+        查询未完成的策略委托单
+        使用 OKX 的查询策略委托单 API: GET /api/v5/trade/orders-algo-pending
+        
+        Args:
+            inst_id: 产品ID，如 'BTC-USDT-SWAP'（可选）
+            ord_type: 订单类型，默认为 'oco'（止盈止损订单）
+            
+        Returns:
+            dict: 查询结果，包含 success 和 data 字段
+        """
+        def _get_pending_algo_orders():
+            try:
+                # 检查API密钥是否配置
+                if not settings.EXCHANGE_API_KEY:
+                    raise ValueError("EXCHANGE_API_KEY未配置，无法查询策略委托单")
+                
+                # 构建查询参数
+                request_params = {
+                    'ordType': ord_type
+                }
+                
+                # 如果提供了inst_id，添加到参数中
+                if inst_id:
+                    request_params['instId'] = inst_id
+                
+                logger.debug(f"查询未完成策略委托单参数: {request_params}")
+                
+                # 调用 OKX 的查询策略委托单 API
+                result = self.exchange.private_get_trade_orders_algo_pending(request_params)
+                
+                if result and 'code' in result:
+                    if result['code'] == '0':
+                        data = result.get('data', [])
+                        logger.info(f"查询未完成策略委托单成功: 找到{len(data)}条记录")
+                        return {
+                            'success': True,
+                            'data': data
+                        }
+                    else:
+                        error_msg = result.get('msg', '未知错误')
+                        logger.error(f"查询未完成策略委托单失败: {error_msg}, result={result}")
+                        raise Exception(f"查询策略委托单失败: {error_msg}")
+                else:
+                    logger.error(f"查询未完成策略委托单返回异常: {result}")
+                    raise Exception("查询策略委托单返回结果异常")
+                    
+            except Exception as e:
+                error_str = str(e)
+                # 检查是否是认证错误
+                if ('401' in error_str or 'Unauthorized' in error_str or
+                    'apiKey' in error_str or 'credential' in error_str.lower() or
+                    'authentication' in error_str.lower()):
+                    logger.error(f"查询策略委托单失败（API密钥未配置或无效）: {error_str}")
+                else:
+                    logger.error(f"查询策略委托单失败: {error_str}", exc_info=True)
+                raise
+        
+        return self.submit_request(
+            RequestPriority.TRADE,
+            _get_pending_algo_orders
+        )
+    
+    def get_account_balance(self, ccy: Optional[str] = None) -> dict:
+        """
+        查询账户余额（返回所有数据）
+        使用 OKX 的查询账户余额 API: GET /api/v5/account/balance
+        
+        Args:
+            ccy: 币种，如 'USDT'（可选，不传则返回所有币种）
+            
+        Returns:
+            dict: 查询结果，包含 success 和 data 字段，data 包含完整的账户余额信息
+        """
+        def _get_account_balance():
+            try:
+                # 检查API密钥是否配置
+                if not settings.EXCHANGE_API_KEY:
+                    raise ValueError("EXCHANGE_API_KEY未配置，无法查询账户余额")
+                
+                # 构建查询参数
+                request_params = {}
+                if ccy:
+                    request_params['ccy'] = ccy
+                
+                logger.debug(f"查询账户余额参数: {request_params}")
+                
+                # 调用 OKX 的查询账户余额 API
+                result = self.exchange.private_get_account_balance(request_params)
+                
+                if result and 'code' in result:
+                    if result['code'] == '0':
+                        data = result.get('data', [])
+                        logger.info(f"查询账户余额成功: 找到{len(data)}条记录")
+                        return {
+                            'success': True,
+                            'data': data,
+                            'raw': result  # 返回完整的原始响应
+                        }
+                    else:
+                        error_msg = result.get('msg', '未知错误')
+                        logger.error(f"查询账户余额失败: {error_msg}, result={result}")
+                        raise Exception(f"查询账户余额失败: {error_msg}")
+                else:
+                    logger.error(f"查询账户余额返回异常: {result}")
+                    raise Exception("查询账户余额返回结果异常")
+                    
+            except Exception as e:
+                error_str = str(e)
+                # 检查是否是认证错误
+                if ('401' in error_str or 'Unauthorized' in error_str or
+                    'apiKey' in error_str or 'credential' in error_str.lower() or
+                    'authentication' in error_str.lower()):
+                    logger.error(f"查询账户余额失败（API密钥未配置或无效）: {error_str}")
+                else:
+                    logger.error(f"查询账户余额失败: {error_str}", exc_info=True)
+                raise
+        
+        return self.submit_request(
+            RequestPriority.QUERY,
+            _get_account_balance
+        )
+    
+    def cancel_algo_orders(
+        self,
+        algo_orders: List[Dict[str, str]]
+    ) -> dict:
+        """
+        取消策略委托订单
+        使用 OKX 的取消策略委托订单 API: POST /api/v5/trade/cancel-algos
+        
+        Args:
+            algo_orders: 策略订单列表，格式：
+                [
+                    {"instId": "BTC-USDT-SWAP", "algoId": "590919993110396111"},
+                    {"instId": "BTC-USDT-SWAP", "algoId": "590920138287841222"}
+                ]
+            
+        Returns:
+            dict: 取消结果，包含 success 和 data 字段
+        """
+        def _cancel_algo_orders():
+            try:
+                # 检查API密钥是否配置
+                if not settings.EXCHANGE_API_KEY:
+                    raise ValueError("EXCHANGE_API_KEY未配置，无法取消策略委托订单")
+                
+                if not algo_orders or len(algo_orders) == 0:
+                    logger.warning("策略订单列表为空，无需取消")
+                    return {
+                        'success': True,
+                        'data': []
+                    }
+                
+                # 构建取消参数
+                # OKX API 要求请求体为数组格式，每个元素包含 algoId 和 instId
+                request_params = [
+                    {
+                        'algoId': str(order['algoId']),
+                        'instId': order.get('instId', '')
+                    }
+                    for order in algo_orders
+                ]
+                
+                logger.debug(f"取消策略委托订单参数: {request_params}")
+                
+                # 调用 OKX 的取消策略委托订单 API
+                result = self.exchange.private_post_trade_cancel_algos(request_params)
+                
+                if result and 'code' in result:
+                    if result['code'] == '0':
+                        data = result.get('data', [])
+                        logger.info(f"取消策略委托订单成功: 取消{len(data)}个订单")
+                        return {
+                            'success': True,
+                            'data': data
+                        }
+                    else:
+                        error_msg = result.get('msg', '未知错误')
+                        logger.error(f"取消策略委托订单失败: {error_msg}, result={result}")
+                        raise Exception(f"取消策略委托订单失败: {error_msg}")
+                else:
+                    logger.error(f"取消策略委托订单返回异常: {result}")
+                    raise Exception("取消策略委托订单返回结果异常")
+                    
+            except Exception as e:
+                error_str = str(e)
+                # 检查是否是认证错误
+                if ('401' in error_str or 'Unauthorized' in error_str or
+                    'apiKey' in error_str or 'credential' in error_str.lower() or
+                    'authentication' in error_str.lower()):
+                    logger.error(f"取消策略委托订单失败（API密钥未配置或无效）: {error_str}")
+                else:
+                    logger.error(f"取消策略委托订单失败: {error_str}", exc_info=True)
+                raise
+        
+        return self.submit_request(
+            RequestPriority.TRADE,
+            _cancel_algo_orders
+        )
+    
+    def create_algo_order(
+        self,
+        inst_id: str,
+        td_mode: str,
+        pos_side: str,
+        sz: float,
+        take_profit_trigger: Optional[float] = None,
+        take_profit_price: Optional[str] = None,
+        stop_loss_trigger: Optional[float] = None,
+        stop_loss_price: Optional[str] = None
+    ) -> dict:
+        """
+        创建策略委托订单（OCO订单）
+        使用 OKX 的创建策略委托订单 API: POST /api/v5/trade/order-algo
+        
+        Args:
+            inst_id: 产品ID，如 'ETH-USDT-SWAP'
+            td_mode: 交易模式，'cross'（全仓）或 'isolated'（逐仓）
+            pos_side: 持仓方向，'long' 或 'short'
+            sz: 数量（合约张数）
+            take_profit_trigger: 止盈触发价格（可选）
+            take_profit_price: 止盈委托价格，'-1'表示市价（可选）
+            stop_loss_trigger: 止损触发价格（可选）
+            stop_loss_price: 止损委托价格，'-1'表示市价（可选）
+            
+        Returns:
+            dict: 创建结果，包含 success 和 data 字段
+        """
+        def _create_algo_order():
+            try:
+                # 检查API密钥是否配置
+                if not settings.EXCHANGE_API_KEY:
+                    raise ValueError("EXCHANGE_API_KEY未配置，无法创建策略委托订单")
+                
+                # 验证参数：必须至少有一个止盈或止损
+                if not take_profit_trigger and not stop_loss_trigger:
+                    raise ValueError("必须至少设置止盈或止损中的一个")
+                
+                # 根据 posSide 推导出 side（平仓方向）
+                # long 持仓平仓 -> side: 'sell'
+                # short 持仓平仓 -> side: 'buy'
+                if pos_side.lower() == 'long':
+                    side = 'sell'
+                elif pos_side.lower() == 'short':
+                    side = 'buy'
+                else:
+                    raise ValueError(f"无效的posSide: {pos_side}，必须是long或short")
+                
+                # 确定订单类型：
+                # - 如果同时有止盈和止损，使用 'oco'（双向止盈止损）
+                # - 如果只有止盈或只有止损，使用 'conditional'（单向条件单）
+                has_tp = take_profit_trigger is not None
+                has_sl = stop_loss_trigger is not None
+                if has_tp and has_sl:
+                    ord_type = 'oco'
+                else:
+                    ord_type = 'conditional'
+                
+                # 构建请求参数
+                request_params = {
+                    'instId': inst_id,
+                    'tdMode': td_mode,
+                    'ordType': ord_type,
+                    'side': side,  # 平仓方向（必填）
+                    'sz': str(sz),
+                    'posSide': pos_side,
+                    'cxlOnClosePos': 'true',  # 与仓位关联
+                    'reduceOnly': 'true'  # 只减仓
+                }
+                
+                # 设置止盈参数（仅在需要时设置）
+                if take_profit_trigger is not None:
+                    request_params['tpTriggerPx'] = str(take_profit_trigger)
+                    request_params['tpTriggerPxType'] = 'last'  # 使用最新价格触发
+                    request_params['tpOrdPx'] = take_profit_price if take_profit_price else '-1'  # 默认市价
+                    if ord_type == 'conditional':
+                        request_params['tpOrdKind'] = 'condition'  # 条件单
+                
+                # 设置止损参数（仅在需要时设置）
+                if stop_loss_trigger is not None:
+                    request_params['slTriggerPx'] = str(stop_loss_trigger)
+                    request_params['slTriggerPxType'] = 'last'  # 使用最新价格触发
+                    request_params['slOrdPx'] = stop_loss_price if stop_loss_price else '-1'  # 默认市价
+                
+                logger.debug(f"创建策略委托订单参数: {request_params}")
+                
+                # 调用 OKX 的创建策略委托订单 API
+                result = self.exchange.private_post_trade_order_algo(request_params)
+                
+                if result and 'code' in result:
+                    if result['code'] == '0':
+                        data = result.get('data', [])
+                        algo_id = data[0].get('algoId', '') if data else ''
+                        logger.info(f"创建策略委托订单成功: algoId={algo_id}, instId={inst_id}, sz={sz}")
+                        return {
+                            'success': True,
+                            'data': data,
+                            'algo_id': algo_id
+                        }
+                    else:
+                        error_msg = result.get('msg', '未知错误')
+                        logger.error(f"创建策略委托订单失败: {error_msg}, result={result}")
+                        raise Exception(f"创建策略委托订单失败: {error_msg}")
+                else:
+                    logger.error(f"创建策略委托订单返回异常: {result}")
+                    raise Exception("创建策略委托订单返回结果异常")
+                    
+            except Exception as e:
+                error_str = str(e)
+                # 检查是否是认证错误
+                if ('401' in error_str or 'Unauthorized' in error_str or
+                    'apiKey' in error_str or 'credential' in error_str.lower() or
+                    'authentication' in error_str.lower()):
+                    logger.error(f"创建策略委托订单失败（API密钥未配置或无效）: {error_str}")
+                else:
+                    logger.error(f"创建策略委托订单失败: {error_str}", exc_info=True)
+                raise
+        
+        return self.submit_request(
+            RequestPriority.TRADE,
+            _create_algo_order
+        )
