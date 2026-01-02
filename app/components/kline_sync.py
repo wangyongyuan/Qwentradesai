@@ -23,6 +23,7 @@ class KlineSyncManager(threading.Thread):
         self.ccxt_symbol = settings.symbol_to_ccxt_format(symbol)  # 转换为CCXT格式
         self.stop_event = threading.Event()
         self.indicator_calculator = IndicatorCalculator()
+        self.market_detector = market_detector  # 市场检测器（可选）
         self.db = db
         self.market_detector = market_detector  # 市场检测器（可选）
         
